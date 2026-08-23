@@ -2,7 +2,10 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <link rel="icon" href="./images/dzlogo.png">
+    <link rel="shortcut icon" type="image/x-icon" href="./favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="./images/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="./images/favicon-16.png">
+    <link rel="icon" type="image/png" href="./images/dzlogo.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     
     <!-- SEO -->
@@ -39,11 +42,10 @@
     <!-- 样式表 -->
     <link rel="stylesheet" href="./css/index.css">
     <link rel="stylesheet" href="./css/ai-chat.css">
-   
-   <!-- Lucide Icons（本地化，避免 Edge 跟踪防护拦截 unpkg） -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <script src="js/vendor/lucide.min.js"></script>
-    
+
+    <!-- Lucide Icons（本地化，避免 Edge 跟踪防护拦截 unpkg） -->
+    <script src="js/vendor/lucide.min.js" defer></script>
+
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 </head>
@@ -81,9 +83,12 @@
                         <i data-lucide="award" class="icon-sm"></i>
                         <span>央视《发现者》栏目推荐</span>
                     </div>
-                    <h1 id="hero-title">
+                    <h1 id="hero-title" class="hero-title-panel">
                         <span class="hero-label">AI睡眠健康分析平台</span>
-                        <span class="hero-headline">用一夜的数据<br>读懂你的睡眠与健康</span>
+                        <span class="thermal-wordmark" data-thermal-wordmark data-words="用一夜的数据|读懂你的睡眠与健康">
+                            <canvas class="thermal-wordmark-canvas" aria-hidden="true"></canvas>
+                            <span class="sr-only">用一夜的数据 读懂你的睡眠与健康</span>
+                        </span>
                     </h1>
                     <p class="hero-desc">支持 ECG · HRV · 血氧 · 呼吸率 · AI分析</p>
                     <div class="hero-actions">
@@ -114,7 +119,7 @@
                 <div class="hero-visual" data-reveal>
                     <div class="phone-float">
                         <div class="phone-frame">
-                            <img src="images/ChatGPT Image 睡眠健康报告.png" alt="个人健康精英Pro+ 应用界面" class="phone-mockup">
+                            <img src="images/AI报告.png" alt="AI睡眠健康报告" class="phone-mockup" width="760" height="1608" fetchpriority="high">
                         </div>
                         <!-- 漂浮卡片 -->
                         <div class="float-card fc-heart">
@@ -159,7 +164,7 @@
                 <div class="media-card" data-reveal>
                     <div class="media-card-inner">
                         <div class="media-card-logo">
-                            <img src="./images/logo.png" alt="发现者栏目Logo">
+                            <img src="./images/logo.png" alt="发现者栏目Logo" loading="lazy" decoding="async">
                         </div>
                         <div class="media-card-info">
                             <h3>央视《发现者》: 生命潮®《数字健康之路》</h3>
@@ -274,57 +279,6 @@
             </div>
         </section>
 
-        <!-- ═══════════════ APP SCREENSHOTS ═══════════════ -->
-        <section class="screenshots" aria-labelledby="screenshots-title">
-            <div class="container">
-                <h2 id="screenshots-title" class="section-title" data-reveal>真实应用体验</h2>
-                <p class="section-subtitle" data-reveal>从首页到报告，每一帧都是真实的健康管理界面</p>
-                <div class="app-carousel" id="appCarousel" data-reveal>
-                    <div class="carousel-viewport">
-                        <div class="carousel-track" id="appCarouselTrack">
-                            <div class="carousel-slide">
-                                <div class="screenshot-phone">
-                                    <img src="images/app-home.png" alt="健康首页 - 健康概览">
-                                </div>
-                                <span class="screenshot-label">健康首页</span>
-                            </div>
-                            <div class="carousel-slide">
-                                <div class="screenshot-phone">
-                                    <img src="images/app-sleep.png" alt="睡眠监测详情">
-                                </div>
-                                <span class="screenshot-label">睡眠监测</span>
-                            </div>
-                            <div class="carousel-slide">
-                                <div class="screenshot-phone">
-                                    <img src="images/app-history.png" alt="历史趋势数据">
-                                </div>
-                                <span class="screenshot-label">历史趋势</span>
-                            </div>
-                            <div class="carousel-slide">
-                                <div class="screenshot-phone">
-                                    <img src="images/app-heartrate.png" alt="心率监测详情">
-                                </div>
-                                <span class="screenshot-label">心率监测</span>
-                            </div>
-                            <div class="carousel-slide">
-                                <div class="screenshot-phone">
-                                    <img src="images/app-bloodoxygen.png" alt="血氧分析">
-                                </div>
-                                <span class="screenshot-label">血氧分析</span>
-                            </div>
-                            <div class="carousel-slide">
-                                <div class="screenshot-phone">
-                                    <img src="images/app-ai-report.png" alt="AI健康报告">
-                                </div>
-                                <span class="screenshot-label">AI健康报告</span>
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
-            </div>
-        </section>
-
         <!-- ═══════════════ AI HEALTH REPORT ═══════════════ -->
         <section class="ai-report" aria-labelledby="report-title">
             <div class="container">
@@ -333,7 +287,7 @@
                 <div class="report-showcase" data-reveal>
                     <div class="report-card">
                         <div class="report-card-img">
-                            <img src="images/ChatGPT Image 睡眠健康报告.png" alt="AI睡眠健康报告">
+                            <img src="images\AI报告.png" alt="AI睡眠健康报告" loading="lazy" decoding="async" width="760" height="1608">
                         </div>
                         <div class="report-card-overlay">
                             <div class="report-card-badge">
@@ -471,7 +425,7 @@
                 <div class="dl-grid" data-reveal>
                     <div class="dl-info">
                         <div class="dl-app-icon">
-                            <img src="./images/pro.png" alt="健康精英Pro+">
+                            <img src="./images/pro.png" alt="健康精英Pro+" loading="lazy" decoding="async">
                         </div>
                         <h3>个人健康精英Pro+</h3>
                         <p class="dl-tagline">让每一次监测充满意义</p>
@@ -492,7 +446,7 @@
                         </div>
                     </div>
                     <div class="dl-qr">
-                        <img src="./images/health-pro-qr.png" alt="扫描二维码下载" class="qr-img">
+                        <img src="./images/health-pro-qr.png" alt="扫描二维码下载" class="qr-img" loading="lazy" decoding="async">
                         <p class="dl-qr-text">使用手机浏览器扫描二维码</p>
                         <p class="dl-qr-sub">打开官网即可下载</p>
                     </div>
@@ -507,7 +461,7 @@
             <div class="footer-grid">
                 <div class="footer-brand">
                     <div class="footer-logo">
-                        <img src="./images/dzlogo.png" alt="健康科技">
+                        <img src="./images/dzlogo.png" alt="健康科技" loading="lazy" decoding="async">
                         <span>健康科技</span>
                     </div>
                     <p class="footer-desc">AI驱动的精准健康管理解决方案</p>
@@ -553,10 +507,11 @@
     </footer>
 
     <!-- Scripts -->
+    <script src="js/thermal-wordmark.js" defer></script>
     <script src="js/performance-optimizer.js" defer></script>
     <script src="js/mobile-nav.js" defer></script>
     <script src="js/index.js" defer></script>
-    <script src="config/ai-chat-config.js"></script>
+    <script src="config/ai-chat-config.js" defer></script>
     <script src="js/ai-chat.js" defer></script>
     <script>
     // Initialize Lucide icons
