@@ -26,50 +26,50 @@ const AI_CHAT_CONFIG = {
     // 动态回答策略配置（参考 NoteGen 的智能路由）
     strategySettings: {
         enabled: true,
-        // 问题分类及对应处理策略（maxTokens 已调低，控制生成量以加快流式完成）
+        // 问题分类及对应处理策略（maxTokens 按场景调整，复杂回答预留足够输出空间）
         intentClassification: {
             'product-inquiry': {
                 keywords: ['是什么', '功能', '介绍', '产品', '有什么', '特点', '优势'],
                 temperature: 0.6,
-                maxTokens: 500,
+                maxTokens: 1200,
                 focus: '产品介绍'
             },
             'operation-guide': {
                 keywords: ['怎么', '如何', '操作', '使用', '步骤', '流程', '教程'],
                 temperature: 0.5,
-                maxTokens: 700,
+                maxTokens: 2000,
                 focus: '操作指导',
                 includeSteps: true
             },
             'troubleshooting': {
                 keywords: ['问题', '故障', '错误', '失败', '连接不上', '无法', '不行', '不能用'],
                 temperature: 0.5,
-                maxTokens: 600,
+                maxTokens: 1200,
                 focus: '故障排查'
             },
             'device-support': {
                 keywords: ['设备', '绑定', '连接', '蓝牙', '发射器', '血压计', '血氧仪', '胸贴'],
                 temperature: 0.5,
-                maxTokens: 600,
+                maxTokens: 1200,
                 focus: '设备支持'
             },
             'report-related': {
                 keywords: ['报告', '测评', '结果', '数据', '分析', '睡眠', '情绪', '体能'],
                 temperature: 0.6,
-                maxTokens: 600,
+                maxTokens: 1500,
                 focus: '报告解读'
             },
             'account-support': {
                 keywords: ['账号', '登录', '注册', '密码', '会员', '订单', '支付'],
                 temperature: 0.5,
-                maxTokens: 400,
+                maxTokens: 800,
                 focus: '账户支持'
             }
         },
         // 默认策略
         defaultStrategy: {
             temperature: 0.5,
-            maxTokens: 500
+            maxTokens: 1500
         }
     },
     

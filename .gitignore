@@ -2,6 +2,7 @@
 .netlify
 # Local Cloudflare / Wrangler
 .wrangler
+_worker.bundle
 .dev.vars
 CLAUDE.md
 # Dependencies
