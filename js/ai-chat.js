@@ -7,6 +7,201 @@
  * - 发送图片自动切换多模态模型
  */
 
+// ═══ ThinkingOrb "connecting" (web/network) 动画引擎（泛化版，可挂到任意 canvas）═══
+const _lerp = (a, b, t) => a + (b - a) * t;
+const _fract = (x) => x - Math.floor(x);
+// E: 哈希 (确定性随机)
+const _hash = (x, y) => {
+    const h = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+    return h - Math.floor(h);
+};
+// G: 平滑值噪声 (双线性插值 + smoothstep)
+function _noise(x, y) {
+    const t = Math.floor(x), r = Math.floor(y);
+    let a = x - t, o = y - r;
+    a = a * a * (3 - 2 * a);
+    o = o * o * (3 - 2 * o);
+    const c = _hash(t, r), M = _hash(t + 1, r), h = _hash(t, r + 1), m = _hash(t + 1, r + 1);
+    return c + (M - c) * a + (h - c) * o + (c - M - h + m) * a * o;
+}
+// J: 斐波那契球面点
+function _fibSphere(i, n) {
+    const phi = Math.PI * (3 - Math.sqrt(5));
+    const y = 1 - 2 * (i + 0.5) / n;
+    const r = Math.sqrt(1 - y * y);
+    const theta = phi * i;
+    return [Math.cos(theta) * r, y, Math.sin(theta) * r];
+}
+// 旋转变换: yaw/pitch → (x,y,z)→[cx,cy,z2]
+function _makeRot(yaw, pitch, cx, cy, r) {
+    const sa = Math.sin(pitch), ca = Math.cos(pitch);
+    const sy = Math.sin(yaw), cyy = Math.cos(yaw);
+    return (x, y, z) => {
+        const e = x * cyy + z * sy;
+        const l = -x * sy + z * cyy;
+        const R = y * ca - l * sa;
+        const w = y * sa + l * ca;
+        return [cx + e * r, cy - R * r, w];
+    };
+}
+// 在指定 canvas 上启动点云球动画；把停止函数挂到 canvas.__orbStop 上
+function startOrbCanvas(canvas) {
+    if (!canvas) return;
+    const container = canvas.parentElement;
+    const size = container.clientWidth || 64;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    canvas.style.width = size + 'px';
+    canvas.style.height = size + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const orbStartTime = performance.now();
+
+    // 颜色: 深蓝渐变 (背面 #0d3366 → 正面 #2673d9)
+    const c1 = { r: 0.05, g: 0.20, b: 0.52 };
+    const c2 = { r: 0.15, g: 0.45, b: 0.85 };
+
+    // web 模式参数 (thinking-orbs@64px preset: speed=3.315, nodeN=30, thr=0.72, signals=5)
+    const cx = size / 2, cy = size / 2;
+    const R = size / 2 * 0.8;
+    const M = Math.pow(size / 300, 0.6);
+    const nodeN = 30;
+    const thr = 0.72;
+    const nodeR = 1.4, nodeRDepth = 1.8;
+    const signalN = 5;
+    const speed = 2.25;
+
+    let orbId = null;
+    function draw(time) {
+        const elapsed = (time - orbStartTime) / 1000;
+        const s = elapsed * speed;
+        const rot = _makeRot(s * 0.12, 0.32, cx, cy, R);
+
+        // 生成节点: 斐波那契球 + 随时间抖动的噪声
+        const nodes = [];
+        for (let i = 0; i < nodeN; i++) {
+            const u = _fibSphere(i, nodeN);
+            const y = u[0] + 0.3 * (_noise(i * 0.31 + 9, s * 0.24) - 0.5) * 2;
+            const b = u[1] + 0.3 * (_noise(i * 0.53 + 27, s * 0.21) - 0.5) * 2;
+            const f = u[2] + 0.3 * (_noise(i * 0.77 + 55, s * 0.27) - 0.5) * 2;
+            const P = Math.sqrt(y * y + b * b + f * f);
+            nodes.push([y / P, b / P, f / P]);
+        }
+
+        // 投影 (z 为未缩放的单位向量分量, 范围≈[-1,1], 深度用 (w+1)/2)
+        const proj = nodes.map(n => {
+            const [x, y, z] = rot(n[0], n[1], n[2]);
+            return { x, y, z, depth: (z + 1) / 2 };
+        });
+
+        ctx.clearRect(0, 0, size, size);
+
+        // 1. 连线 (距离 < thr 的节点相连)
+        for (let i = 0; i < nodeN; i++) {
+            for (let j = i + 1; j < nodeN; j++) {
+                const dx = nodes[i][0] - nodes[j][0];
+                const dy = nodes[i][1] - nodes[j][1];
+                const dz = nodes[i][2] - nodes[j][2];
+                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                if (dist >= thr) continue;
+                const z = ((proj[i].z + proj[j].z) / 2 + 1) / 2;
+                const alpha = (1 - dist / thr) * (0.3 + 0.55 * z);
+                if (alpha < 0.02) continue;
+                const cr = _lerp(c1.r, c2.r, z);
+                const cg = _lerp(c1.g, c2.g, z);
+                const cb = _lerp(c1.b, c2.b, z);
+                ctx.beginPath();
+                ctx.moveTo(proj[i].x, proj[i].y);
+                ctx.lineTo(proj[j].x, proj[j].y);
+                ctx.strokeStyle = `rgba(${cr*255|0},${cg*255|0},${cb*255|0},${alpha * 0.6})`;
+                ctx.lineWidth = Math.max(0.6, 0.8 * M);
+                ctx.stroke();
+            }
+        }
+
+        // 2. 收集所有点 (节点 + 信号), 按 z 从远到近排序后绘制
+        const dots = [];
+
+        // 节点 (近大远小, 带呼吸脉冲)
+        for (let i = 0; i < nodeN; i++) {
+            const p = proj[i];
+            const pulse = 1 + 0.25 * Math.sin(s * 1.4 + i * 2.7);
+            dots.push({
+                x: p.x, y: p.y, z: p.z,
+                r: (nodeR + nodeRDepth * p.depth) * pulse * M,
+                d: p.depth
+            });
+        }
+
+        // 信号脉冲 (5 条沿随机节点连线流动, 亮蓝点)
+        for (let i = 0; i < signalN; i++) {
+            const phase = s * 0.55 + i * 7.31;
+            const fi = Math.floor(phase);
+            const frac = _fract(phase);
+            const a = Math.floor(_hash(fi, i * 3.1 + 1.7) * nodeN);
+            let b = Math.floor(_hash(fi, i * 5.7 + 4.2) * nodeN);
+            if (a === b) continue;
+            // 沿弦插值并投影到球面
+            const px = _lerp(nodes[a][0], nodes[b][0], frac);
+            const py = _lerp(nodes[a][1], nodes[b][1], frac);
+            const pz = _lerp(nodes[a][2], nodes[b][2], frac);
+            const len = Math.max(1e-6, Math.sqrt(px*px + py*py + pz*pz));
+            const [sx, sy, sz] = rot(px/len, py/len, pz/len);
+            const sd = (sz + 1) / 2;
+            dots.push({
+                x: sx, y: sy, z: sz,
+                r: (nodeR * 1.5 + nodeRDepth * sd) * M,
+                d: sd,
+                signal: true
+            });
+        }
+
+        // 画家算法: 远→近
+        dots.sort((a, b) => a.z - b.z);
+        for (const p of dots) {
+            const f = p.d;
+            const alpha = p.signal ? 0.5 + 0.5 * f : 0.15 + 0.8 * f;
+            const cr = _lerp(c1.r, c2.r, f);
+            const cg = _lerp(c1.g, c2.g, f);
+            const cb = _lerp(c1.b, c2.b, f);
+            const color = p.signal ? `rgba(30,144,255,${alpha * 0.95})` : `rgba(${cr*255|0},${cg*255|0},${cb*255|0},${alpha})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, Math.max(0.3, p.r), 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+
+        // 中心辉光
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 0.5);
+        grad.addColorStop(0, 'rgba(38,115,217,0.08)');
+        grad.addColorStop(1, 'rgba(38,115,217,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        orbId = requestAnimationFrame(draw);
+    }
+    orbId = requestAnimationFrame(draw);
+
+    canvas.__orbStop = () => {
+        if (orbId) {
+            cancelAnimationFrame(orbId);
+            orbId = null;
+        }
+        const c = canvas.getContext('2d');
+        if (c) c.clearRect(0, 0, canvas.width, canvas.height);
+    };
+}
+function stopOrbCanvas(canvas) {
+    if (canvas && typeof canvas.__orbStop === 'function') {
+        canvas.__orbStop();
+        canvas.__orbStop = null;
+    }
+}
+
 class AIChatWidget {
     constructor() {
         this.isOpen = false;
@@ -364,9 +559,18 @@ class AIChatWidget {
                 const bubble = lastDiv && lastDiv.querySelector('.chat-bubble');
                 if (bubble) {
                     const loading = document.createElement('div');
-                    loading.className = 'message-text message-loading';
-                    loading.textContent = '⏳ 正在识别图片...';
+                    loading.className = 'message-loading';
+                    const orbWrap = document.createElement('div');
+                    orbWrap.className = 'message-loading-orb';
+                    const canvas = document.createElement('canvas');
+                    orbWrap.appendChild(canvas);
+                    const loadingText = document.createElement('div');
+                    loadingText.className = 'message-loading-text';
+                    loadingText.textContent = '⏳ 正在识别图片...';
+                    loading.appendChild(orbWrap);
+                    loading.appendChild(loadingText);
                     bubble.appendChild(loading);
+                    startOrbCanvas(canvas);
                     this.scrollToBottom();
                 }
             }
@@ -423,6 +627,7 @@ class AIChatWidget {
                 const textEl = bubble && bubble.querySelector('.message-text');
                 const loadingEl = bubble && bubble.querySelector('.message-loading');
                 if (!textEl || (!textEl.textContent.trim() && loadingEl)) {
+                    stopOrbCanvas(loadingEl ? loadingEl.querySelector('canvas') : null);
                     last.remove();
                 }
             }
@@ -462,8 +667,11 @@ class AIChatWidget {
             }))
         ];
 
+        // 识图/OCR 为非流式请求，模型需理解图片+一次性生成文本，耗时长，放宽超时；
+        // 文本对话走流式逐字输出，30s 足够
+        const timeoutMs = hasImage ? 90000 : 30000;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 30000);
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         const strategyCfg = strategy || {};
         const isStream = this.config.stream !== false && !hasImage;
         this._isStreaming = isStream;
@@ -633,7 +841,10 @@ class AIChatWidget {
         if (!bubble) return;
         // 移除加载提示
         const loadingEl = bubble.querySelector('.message-loading');
-        if (loadingEl) loadingEl.remove();
+        if (loadingEl) {
+            stopOrbCanvas(loadingEl.querySelector('canvas'));
+            loadingEl.remove();
+        }
         let textEl = bubble.querySelector('.message-text');
         if (!textEl) {
             textEl = document.createElement('div');

@@ -21,13 +21,6 @@
     "enabled": true
   },
 
-  // Cron 触发器：Supabase keep-alive 定时任务
-  // ⚠️ 需先在 workers/index.js 中实现 scheduled handler，否则触发无效；
-  //    若暂不迁移 keep-alive，可删除整个 triggers 块
-  "triggers": {
-    "crons": ["*/15 * * * *"]
-  },
-
   // 自定义规则：允许 .md 文件通过 ?raw 导入为字符串（知识库）
   "rules": [
     { "type": "Text", "globs": ["**/*.md"] }
