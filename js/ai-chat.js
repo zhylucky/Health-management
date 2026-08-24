@@ -1,4 +1,4 @@
-﻿/**
+/**
  * AI 助手 v3
  * - 仿 Perplexity / Claude / ChatGPT 网页聊天布局
  * - 流式输出（打字机）
@@ -69,7 +69,7 @@ class AIChatWidget {
         chatContainer.innerHTML = `
             <header class="ai-chat-header">
                 <button class="ai-chat-close" title="关闭">
-                    <i class="fas fa-arrow-left"></i>
+                    <i data-lucide="x"></i>
                 </button>
                 <div class="ai-chat-title">
                     <span class="ai-chat-name">豆眼儿</span>
@@ -77,7 +77,7 @@ class AIChatWidget {
                 </div>
                 <div class="ai-chat-actions">
                     <button class="ai-chat-clear" title="清空对话">
-                        <i class="fas fa-trash"></i>
+                        <i data-lucide="trash-2"></i>
                     </button>
                 </div>
             </header>
@@ -88,18 +88,18 @@ class AIChatWidget {
                         <img id="chatImgPreviewImg" alt="预览">
                         <div class="ai-chat-img-info" id="chatImgInfo"></div>
                         <button class="ai-chat-img-remove" title="移除">
-                            <i class="fas fa-times"></i>
+                            <i data-lucide="x"></i>
                         </button>
                     </div>
                     <div class="ai-chat-input">
                         <input type="file" id="chatImgInput" accept="image/*" hidden>
                         <button class="ai-chat-attach" id="chatImgBtn" title="发送图片（也可直接粘贴）">
-                            <i class="fas fa-image"></i>
+                            <i data-lucide="image"></i>
                         </button>
                         <textarea class="chat-input-field" id="chatInput"
                             placeholder="输入消息，回车发送，Shift+回车换行..." rows="1"></textarea>
                         <button class="ai-chat-send" id="chatSendBtn" title="发送">
-                            <i class="fas fa-arrow-up"></i>
+                            <i data-lucide="send"></i>
                         </button>
                     </div>
                     <div class="ai-chat-hint">Enter 发送 · Shift+Enter 换行 · 支持图片粘贴</div>
@@ -108,14 +108,22 @@ class AIChatWidget {
         `;
         document.body.appendChild(chatContainer);
 
+        // 渲染 Lucide 图标（动态插入的 DOM 需要手动触发）
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons({ nodes: [chatContainer] });
+        }
+
         // 图片灯箱（点击聊天中的图片放大查看）
         const lightbox = document.createElement('div');
         lightbox.className = 'image-lightbox';
         lightbox.innerHTML = `
-            <button class="image-lightbox-close" title="关闭"><i class="fas fa-times"></i></button>
+            <button class="image-lightbox-close" title="关闭"><i data-lucide="x"></i></button>
             <img class="image-lightbox-img" alt="放大预览">
         `;
         document.body.appendChild(lightbox);
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons({ nodes: [lightbox] });
+        }
         this.lightbox = lightbox;
         this.lightboxImg = lightbox.querySelector('.image-lightbox-img');
         this.lightboxClose = lightbox.querySelector('.image-lightbox-close');
@@ -144,6 +152,7 @@ class AIChatWidget {
     bindEvents() {
         this.floatBtn.addEventListener('click', () => this.toggleChat());
         this.closeBtn.addEventListener('click', () => this.closeChat());
+        this.overlay.addEventListener('click', () => this.closeChat());
         this.sendBtn.addEventListener('click', () => this.sendMessage());
 
         this.inputField.addEventListener('keydown', (e) => {
@@ -339,7 +348,7 @@ class AIChatWidget {
 
         const originalHtml = this.sendBtn.innerHTML;
         this.sendBtn.disabled = true;
-        this.sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        this.sendBtn.innerHTML = '<span class="sending-spinner">◌</span>';
 
         try {
             this.validateAndCleanMessages();
@@ -356,7 +365,7 @@ class AIChatWidget {
                 if (bubble) {
                     const loading = document.createElement('div');
                     loading.className = 'message-text message-loading';
-                    loading.textContent = '🔍 正在识别图片...';
+                    loading.textContent = '⏳ 正在识别图片...';
                     bubble.appendChild(loading);
                     this.scrollToBottom();
                 }
@@ -565,8 +574,12 @@ class AIChatWidget {
         const avatar = document.createElement('div');
         avatar.className = `chat-avatar ${displayRole}`;
         avatar.innerHTML = displayRole === 'user'
-            ? '<i class="fas fa-user"></i>'
+            ? '<i data-lucide="user"></i>'
             : '';
+        // 渲染头像中的 Lucide 图标
+        if (displayRole === 'user' && typeof lucide !== 'undefined') {
+            lucide.createIcons({ nodes: [avatar] });
+        }
 
         const bubble = document.createElement('div');
         bubble.className = 'chat-bubble';

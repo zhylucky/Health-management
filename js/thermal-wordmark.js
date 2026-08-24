@@ -26,18 +26,18 @@
   var SWAP_MS = 3000;                 // 换词间隔
   var ANIM_MS = 4000;                 // 内部 loop（比 swap 长，永不 self-wrap）
   var SETTLE_MS = 1250;               // 稳定期阈值（词完成于 ~1192ms，此后只画一帧）
-  var STRETCH_Y = 1.5;                // pad 垂直拉伸（各向异性模糊）
+  var STRETCH_Y = 1.0;                // pad 不再垂直拉伸（消除 Y 重采样条纹）
   var STRETCH_X = 1.25;               // 字形水平拉伸
   var LUT_Q = 160;                    // LUT q 行数（高密度，防列线）
-  var BLUR_LEVELS = 20;               // 预渲染模糊级数
+  var BLUR_LEVELS = 40;               // 预渲染模糊级数（增加到40，消除离散跳变条纹）
   var CRISP_START = 0.65;             // crisp crossfade 起点（over q）
-  var GREY = [37, 99, 235];         // settled 品牌蓝 #2563EB（8-23 决定：浅底高对比度）
+  var GREY = [37, 99, 235];         // settled 品牌蓝 #2563EB（浅底高对比度）
   var HEAT = 1.3;                     // exposure 峰值
   var GHOST_TAIL = 0.06;              // ghost 拖尾系数
   var BLUR_FACTOR = 0.22;             // blur 相对 em 的比例
   var GAMMA = 1.4;                    // alpha gamma
   var DIRECT_PX = 1.5;                // 低于此 blur（CSS px）直接画原字
-  var ASPECT = 240 / 800;             // canvas 高宽比（800/240 窄横幅）
+  var ASPECT = 240 / 800;             // canvas 高宽比（原值，800/240 窄横幅）
   var FIT_W = 0.74;                   // fit 74% 画布宽度
   var TYPE_EM = 75;                   // TYPE 字号基准（800 参考）
   var SIZE = 2.6;                     // 字号乘数：8-23 中文长词 em≈48px（fit 74% 兜底）
@@ -237,11 +237,14 @@
     tick: function () {
       if (!this.running) return;
       var t = performance.now() - this.cycleStart;
-      for (var i = 0; i < this.subscribers.length; i++) this.subscribers[i].render(t);
+      // 截断到 SETTLE_MS，防止 t 溢出导致下一帧起始 q < 0（视觉闪烁）
+      var tRender = t > SETTLE_MS ? SETTLE_MS : t;
+      for (var i = 0; i < this.subscribers.length; i++) this.subscribers[i].render(tRender);
       if (t >= SETTLE_MS) {
-        // 稳定期：只画这一帧，等 SWAP_MS 换词
+        // 稳定期：停止 rAF，用精确计时器换词（避免 setTimeout 漂移累积）
         this.rafId = null;
-        this.swapTimer = setTimeout(function () { clock.next(); }, Math.max(16, SWAP_MS - t));
+        var delay = SWAP_MS - (t - SETTLE_MS);
+        this.swapTimer = setTimeout(function () { clock.next(); }, Math.max(16, delay));
       } else {
         this.rafId = requestAnimationFrame(function () { clock.tick(); });
       }
@@ -463,13 +466,13 @@
     setTimeout(function () {
       if (id !== self.buildId) return;
       self.prepareWord(clock.index);
+      // 仅在非动画状态下强制渲染（动画中由 tick() 自然驱动，避免 blur stack 不一致）
       if (clock.frozenT !== null) {
         self.render(clock.frozenT);
       } else if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         self.renderSettled();
-      } else if (clock.running) {
-        self.render(performance.now() - clock.cycleStart);
       }
+      // clock.running 时不渲染——下一帧 tick() 会用新的 blurStack
     }, 60);
   };
 

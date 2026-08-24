@@ -91,17 +91,20 @@
 }
 .ai-chat-close {
     justify-self: start;
-    background: transparent;
-    border: none;
-    color: #6b7280;
-    width: 36px;
-    height: 36px;
+    background: #e5e7eb;
+    border: 2px solid #d1d5db;
+    color: #111827;
+    width: 38px;
+    height: 38px;
     border-radius: 50%;
     cursor: pointer;
     font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: background .15s, color .15s;
 }
-.ai-chat-close:hover { background: #f3f4f6; color: #111827; }
+.ai-chat-close:hover { background: #d1d5db; color: #000; }
 .ai-chat-title {
     display: flex;
     flex-direction: column;
@@ -126,18 +129,33 @@
     gap: 8px;
 }
 .ai-chat-model-select {
-    border: 1px solid #e5e7eb;
-    background: #f9fafb;
+    border: 1px solid #d1d5db;
+    background: #f3f4f6;
     border-radius: 8px;
-    padding: 5px 8px;
+    padding: 5px 10px;
     font-size: 12px;
+    font-weight: 500;
     color: #374151;
     cursor: pointer;
     outline: none;
     transition: border-color .15s;
 }
 .ai-chat-model-select:hover { border-color: #2563EB; }
-.ai-chat-clear,
+.ai-chat-clear {
+    background: #e5e7eb;
+    border: 2px solid #d1d5db;
+    color: #374151;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s, color .15s;
+}
+.ai-chat-clear:hover { background: #fecaca; color: #b91c1c; border-color: #f87171; }
 .ai-chat-img-remove {
     background: transparent;
     border: none;
@@ -149,7 +167,6 @@
     font-size: 13px;
     transition: background .15s, color .15s;
 }
-.ai-chat-clear:hover,
 .ai-chat-img-remove:hover { background: #f3f4f6; color: #2563EB; }
 
 /* ─── 消息区 ─── */
@@ -391,22 +408,28 @@
     width: 100%;
 }
 .quick-action-btn {
-    background: #fff;
-    border: 1px solid #e5e7eb;
+    background: #f8fafc;
+    border: 1.5px solid #d1d5db;
     border-radius: 12px;
     padding: 12px 14px;
     font-size: 13px;
+    font-weight: 500;
     color: #374151;
     cursor: pointer;
     text-align: left;
     transition: all .15s;
 }
+.quick-action-btn::before {
+    content: '💬';
+    margin-right: 6px;
+    font-size: 14px;
+}
 .quick-action-btn:hover {
     border-color: #2563EB;
     color: #2563EB;
-    background: #f0f7ff;
+    background: #eff6ff;
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(37, 99, 235, .12);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, .15);
 }
 
 /* ─── 输入区 ─── */
@@ -463,19 +486,23 @@
 }
 .ai-chat-attach {
     flex-shrink: 0;
-    width: 36px;
-    height: 36px;
-    border: none;
+    width: 40px;
+    height: 40px;
+    border: 2px solid #d1d5db;
     border-radius: 50%;
     cursor: pointer;
-    background: transparent;
-    color: #6b7280;
+    background: #e5e7eb;
+    color: #374151;
     font-size: 16px;
-    transition: background .15s, color .15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s, color .15s, border-color .15s;
 }
 .ai-chat-attach:hover {
-    background: rgba(37, 99, 235, .1);
+    background: #dbeafe;
     color: #2563EB;
+    border-color: #60a5fa;
 }
 .chat-input-field {
     flex: 1;
@@ -493,31 +520,57 @@
 .chat-input-field::placeholder { color: #9ca3af; }
 .ai-chat-send {
     flex-shrink: 0;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     border: none;
     border-radius: 50%;
     cursor: pointer;
     background: #2563EB;
     color: #fff;
-    font-size: 14px;
+    font-size: 18px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background .15s, transform .1s;
+    transition: background .15s, transform .1s, box-shadow .15s;
+    box-shadow: 0 3px 12px rgba(37, 99, 235, .4);
 }
-.ai-chat-send:hover { background: #1d4ed8; }
+.ai-chat-send:hover { background: #1d4ed8; box-shadow: 0 5px 18px rgba(37, 99, 235, .5); }
 .ai-chat-send:active { transform: scale(.95); }
 .ai-chat-send:disabled {
     background: #d1d5db;
     color: #fff;
     cursor: not-allowed;
+    box-shadow: none;
+}
+.sending-spinner {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+    font-size: 20px;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 .ai-chat-hint {
     text-align: center;
     font-size: 11px;
     color: #9ca3af;
     margin-top: 8px;
+}
+
+/* ─── Lucide 图标尺寸（按钮内 SVG） ─── */
+.ai-chat-close svg,
+.ai-chat-clear svg,
+.ai-chat-attach svg,
+.ai-chat-send svg,
+.ai-chat-img-remove svg,
+.image-lightbox-close svg {
+    width: 18px;
+    height: 18px;
+}
+.chat-avatar svg {
+    width: 16px;
+    height: 16px;
 }
 
 /* ─── 错误提示 ─── */
