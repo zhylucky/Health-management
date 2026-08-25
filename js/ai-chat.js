@@ -520,9 +520,7 @@ class AIChatWidget {
     scrollToBottom(force = false) {
         // 用户上翻（超过阈值）时解除自动跟随，不抢滚动控制权
         if (!force && !this._nearBottom) return;
-        requestAnimationFrame(() => {
-            this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-        });
+        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
     }
 
     async sendMessage() {
@@ -556,11 +554,14 @@ class AIChatWidget {
         this.sendBtn.disabled = true;
         this.sendBtn.innerHTML = '<span class="sending-spinner">◌</span>';
 
+        // 流式渲染 rAF 句柄：需在 try 外声明，报错路径也要能取消
+        let rafId = null;
+
         try {
             this.validateAndCleanMessages();
             const strategy = this.classifyIntent(message || '');
 
-            const aiMsg = { role: 'assistant', content: '' };
+            const aiMsg = { role: 'assistant', content: '', reasoningContent: '' };
             this.addMessage(aiMsg);
             this.scrollToBottom(true);
 
@@ -586,7 +587,10 @@ class AIChatWidget {
                 }
             }
 
-            // 流式渲染节流：每 50ms 最多渲染一次，避免逐字重绘卡顿
+            // 流式渲染节流：requestAnimationFrame 对齐屏幕刷新（~16.7ms），
+            // 同帧内到达的增量合并渲染一次，避免固定定时器"攒批蹦出"的生硬感；
+            // 附加 30ms 最小间隔守卫，高刷屏（120/144Hz）上避免全量重排空转 CPU
+            let renderScheduled = false;
             let lastRender = 0;
 
             // 思考模式：创建思考内容区域（像 DeepSeek 网页一样先显示思考再输出回答）
@@ -602,6 +606,8 @@ class AIChatWidget {
                 strategy,
                 image: hasImage ? userMsg.image : null,
                 onReasoning: (text) => {
+                    // 记录思考内容：SiliconFlow 思考模式要求下一轮请求必须原样回传 reasoning_content
+                    aiMsg.reasoningContent += text;
                     if (!thinkingBubble) return;
                     if (!thinkingEl) {
                         thinkingEl = document.createElement('div');
@@ -619,18 +625,35 @@ class AIChatWidget {
                         thinkingEl.classList.add('done');
                     }
                     aiMsg.content += delta;
-                    const now = Date.now();
-                    if (now - lastRender >= 50) {
-                        lastRender = now;
-                        this.updateMessageContent(aiMsg, aiMsg.content, true);
+                    if (!renderScheduled) {
+                        renderScheduled = true;
+                        rafId = requestAnimationFrame(() => {
+                            renderScheduled = false;
+                            rafId = null;
+                            const now = Date.now();
+                            if (now - lastRender >= 30) {
+                                lastRender = now;
+                                this.updateMessageContent(aiMsg, aiMsg.content, true);
+                            }
+                        });
                     }
                 }
             });
+            // 流已结束：取消挂起的渲染帧，交给下面的最终渲染兜底
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
             aiMsg.content = content;
             this.updateMessageContent(aiMsg, content, false);
             this.messages.push(aiMsg);
         } catch (error) {
             console.error('AI API 调用失败:', error);
+            // 取消挂起的渲染帧：报错时气泡可能被移除，防止"幽灵 rAF"把半截内容渲染进上一条气泡
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
             // 移除"只有加载提示 / 空内容"的 AI 气泡
             const last = this.messagesContainer.lastElementChild;
             if (last && last.classList.contains('chat-message')) {
@@ -672,10 +695,20 @@ class AIChatWidget {
         // this.messages 已包含刚发送的 userMsg，无需重复追加
         const messageHistory = [
             { role: 'system', content: enhancedSystemPrompt },
-            ...this.messages.slice(-this.maxMessages).map(msg => ({
-                role: msg.role === 'ai' ? 'assistant' : msg.role,
-                content: typeof msg.content === 'string' ? msg.content : ''
-            }))
+            ...this.messages.slice(-this.maxMessages).map(msg => {
+                const item = {
+                    role: msg.role === 'ai' ? 'assistant' : msg.role,
+                    content: typeof msg.content === 'string' ? msg.content : ''
+                };
+                // SiliconFlow 思考模式要求：上一轮 assistant 的 reasoning_content 必须原样回传，
+                // 否则多轮对话报 400："The reasoning_content in the thinking mode must be passed back to the API."
+                // 但仅当本轮仍处于思考模式时才回传：关闭思考或识图（enable_thinking=false）时
+                // 仍携带 reasoning_content 会被平台判定参数非法
+                if (item.role === 'assistant' && thinkingMode && msg.reasoningContent) {
+                    item.reasoning_content = msg.reasoningContent;
+                }
+                return item;
+            })
         ];
 
         // 识图/OCR 为非流式请求，模型需理解图片+一次性生成文本，耗时长，放宽超时；
@@ -930,10 +963,15 @@ class AIChatWidget {
         this.messages = this.messages.filter(m => m && m.role &&
             ['user', 'assistant', 'system'].includes(m.role) &&
             (m.content || m.image))
-            .map(m => ({
-                role: m.role === 'ai' ? 'assistant' : m.role,
-                content: typeof m.content === 'string' ? m.content : ''
-            }));
+            .map(m => {
+                const item = {
+                    role: m.role === 'ai' ? 'assistant' : m.role,
+                    content: typeof m.content === 'string' ? m.content : ''
+                };
+                // 保留思考内容：SiliconFlow 思考模式要求下一轮请求原样回传 reasoning_content
+                if (m.reasoningContent) item.reasoningContent = m.reasoningContent;
+                return item;
+            });
     }
 
     getCurrentTime() {

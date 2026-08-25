@@ -5,14 +5,17 @@
 // 依赖：Pages 项目环境变量 SILICONFLOW_API_KEY（wrangler pages secret put）
 // ═══════════════════════════════════════════════
 
-// 知识库：运行时读取同源静态资源 Markdown/knowledge-base.md
+// 知识库 RAG 检索（共享模块，三通道行为一致）
+import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS } from '../../shared/kb-retrieval.js';
+
+// 知识库：运行时读取同源静态资源 Markdown/kb.md
 // （Pages Functions 打包器不支持 .md 导入，故随站点发布后 fetch 读取）
 let KNOWLEDGE_BASE_CACHE = null;
 
 async function loadKnowledgeBase(request) {
   if (KNOWLEDGE_BASE_CACHE) return KNOWLEDGE_BASE_CACHE;
   try {
-    const url = new URL('/Markdown/knowledge-base.md', request.url);
+    const url = new URL('/Markdown/kb.md', request.url);
     const resp = await fetch(url.toString(), { cache: 'no-store' });
     if (resp.ok) {
       KNOWLEDGE_BASE_CACHE = await resp.text();
@@ -108,17 +111,25 @@ export async function onRequestPost(context) {
       return json({ error: 'messages 参数无效或缺失' }, 400);
     }
 
-    // 知识库注入
+    // 知识库检索注入（RAG：按问题检索相关片段，不再整库全量注入）
     if (injectKnowledge === true && messages.length > 0) {
       const knowledgeBase = await loadKnowledgeBase(request);
-      const systemMsgIndex = messages.findIndex(m => m.role === 'system');
-      if (systemMsgIndex !== -1) {
-        messages[systemMsgIndex].content += `\n\n--- 产品知识库 ---\n${knowledgeBase}`;
+      const { injection, hits } = buildKnowledgeInjection(messages, knowledgeBase, KB_CONFIG_DEFAULTS);
+      if (injection) {
+        if (hits.length) {
+          console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
+        }
+        const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+        if (systemMsgIndex !== -1) {
+          messages[systemMsgIndex].content += injection;
+        } else {
+          messages.unshift({
+            role: 'system',
+            content: `你是"个人健康精英Pro+"的AI健康助手。${injection}`
+          });
+        }
       } else {
-        messages.unshift({
-          role: 'system',
-          content: `你是"个人健康精英Pro+"的AI健康助手。\n\n--- 产品知识库 ---\n${knowledgeBase}`
-        });
+        console.log('[KB-RAG] no hit, skip injection');
       }
     }
 

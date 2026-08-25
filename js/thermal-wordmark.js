@@ -282,7 +282,7 @@
 
     if (!this.canvas || !this.ctx || this.words.length === 0) return;
 
-    this.alignLeft = !window.matchMedia('(max-width: 767px)').matches;
+    this.alignLeft = true;
     this.invalidateLayout = this.invalidateLayout.bind(this);
     this.prepareWord(clock.index);
   }
@@ -328,7 +328,8 @@
     // 当前词 ink 几何（水平拉伸后）
     var textW = ctx.measureText(word).width;
     this.inkSpan = textW * STRETCH_X;
-    this.inkLeft = this.alignLeft ? this.cssW * 0.06 : (this.cssW - this.inkSpan) / 2;
+    // 始终左对齐：与上方 AI睡眠健康分析平台 / 下方 支持 ECG 描述 左缘对齐
+    this.inkLeft = this.alignLeft ? 0 : (this.cssW - this.inkSpan) / 2;
 
     // baseline：光学校准 400·s + em·0.28（lowercase）/ 0.36（caps）
     var baselineY = 400 * sRef + this.em * (caps ? 0.36 : 0.28);
@@ -459,8 +460,8 @@
   Wordmark.prototype.invalidateLayout = function () {
     var self = this;
     var id = ++this.buildId;
-    // 同步响应式状态（跨 767px 阈值 / 跨屏 dpr 变化）
-    this.alignLeft = !window.matchMedia('(max-width: 767px)').matches;
+    // 同步响应式状态（跨 767px 阈值 / 跨屏 dpr 变化）——热水印始终左对齐
+    this.alignLeft = true;
     this.dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
     // 防抖：尺寸/字体变化后重建
     setTimeout(function () {

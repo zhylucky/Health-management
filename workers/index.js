@@ -27,7 +27,8 @@ function buildCorsHeaders(request) {
 }
 
 // ═══ 知识库（内嵌，避免 Workers 无法读取文件系统） ═══
-import KNOWLEDGE_BASE from '../Markdown/knowledge-base.md';
+import KNOWLEDGE_BASE from '../Markdown/kb.md';
+import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS } from '../shared/kb-retrieval.js';
 
 // ═══ 图片消息处理：识图理解 / OCR 提取 ═══
 async function handleImage(request, env, body) {
@@ -129,16 +130,24 @@ async function handleChat(request, env) {
       throw new Error('messages 参数无效或缺失');
     }
 
-    // 知识库注入
+    // 知识库检索注入（RAG：按问题检索相关片段，不再整库全量注入）
     if (injectKnowledge === true && messages.length > 0) {
-      const systemMsgIndex = messages.findIndex(m => m.role === 'system');
-      if (systemMsgIndex !== -1) {
-        messages[systemMsgIndex].content += `\n\n--- 产品知识库 ---\n${KNOWLEDGE_BASE}`;
+      const { injection, hits } = buildKnowledgeInjection(messages, KNOWLEDGE_BASE, KB_CONFIG_DEFAULTS);
+      if (injection) {
+        if (hits.length) {
+          console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
+        }
+        const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+        if (systemMsgIndex !== -1) {
+          messages[systemMsgIndex].content += injection;
+        } else {
+          messages.unshift({
+            role: 'system',
+            content: `你是"个人健康精英Pro+"的AI健康助手。${injection}`
+          });
+        }
       } else {
-        messages.unshift({
-          role: 'system',
-          content: `你是"个人健康精英Pro+"的AI健康助手。\n\n--- 产品知识库 ---\n${KNOWLEDGE_BASE}`
-        });
+        console.log('[KB-RAG] no hit, skip injection');
       }
     }
 

@@ -44,6 +44,8 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 ├── workers/                   # Cloudflare Worker 备用 API 通道
 ├── images/                    # 图片资源
 ├── Markdown/                  # 知识库与部署文档
+├── scripts/                   # 本地验证脚本（零依赖，node 直跑）
+├── shared/                    # 三通道共用的检索模块（kb-retrieval.js）
 ├── _headers                   # Pages 缓存与安全响应头
 ├── wrangler.jsonc             # Cloudflare Worker 配置
 └── netlify.toml               # Netlify 部署配置（备用）

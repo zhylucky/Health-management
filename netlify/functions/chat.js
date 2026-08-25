@@ -2,6 +2,7 @@
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const { buildKnowledgeInjection, KB_CONFIG_DEFAULTS } = require('../../shared/kb-retrieval.js');
 
 // CORS 白名单：仅允许官方站点与本地开发环境
 const ALLOWED_ORIGINS = [
@@ -46,9 +47,9 @@ function loadKnowledgeBase() {
   try {
     // 尝试多个可能的路径
     const possiblePaths = [
-      path.join(__dirname, '../../Markdown/knowledge-base.md'),
-      path.join(process.cwd(), 'Markdown/knowledge-base.md'),
-      path.join('/opt/build/repo', 'Markdown/knowledge-base.md')
+      path.join(__dirname, '../../Markdown/kb.md'),
+      path.join(process.cwd(), 'Markdown/kb.md'),
+      path.join('/opt/build/repo', 'Markdown/kb.md')
     ];
 
     for (const filePath of possiblePaths) {
@@ -106,23 +107,30 @@ exports.handler = async function(event, context) {
       throw new Error('messages 参数无效或缺失');
     }
 
-    // ========== 知识库注入 ==========
-    // 仅当 injectKnowledge 为 true 时注入（聊天功能），报告功能不注入
+    // ========== 知识库检索注入（RAG） ==========
+    // 按问题检索相关片段，不再整库全量注入
     if (injectKnowledge === true && !image && messages.length > 0) {
       const knowledgeBase = loadKnowledgeBase();
       if (knowledgeBase) {
-        // 找到system message并注入知识库
-        const systemMsgIndex = messages.findIndex(m => m.role === 'system');
-        if (systemMsgIndex !== -1) {
-          messages[systemMsgIndex].content += `\n\n--- 产品知识库 ---\n${knowledgeBase}`;
-          console.log('[KnowledgeBase] Injected into system message');
+        const { injection, hits } = buildKnowledgeInjection(messages, knowledgeBase, KB_CONFIG_DEFAULTS);
+        if (injection) {
+          if (hits.length) {
+            console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
+          }
+          // 找到system message并注入
+          const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+          if (systemMsgIndex !== -1) {
+            messages[systemMsgIndex].content += injection;
+            console.log('[KB-RAG] Injected into system message');
+          } else {
+            messages.unshift({
+              role: 'system',
+              content: `你是"个人健康精英Pro+"的AI健康助手。${injection}`
+            });
+            console.log('[KB-RAG] Created new system message');
+          }
         } else {
-          // 如果没有system message，在最前面添加
-          messages.unshift({
-            role: 'system',
-            content: `你是"个人健康精英Pro+"的AI健康助手。\n\n--- 产品知识库 ---\n${knowledgeBase}`
-          });
-          console.log('[KnowledgeBase] Created new system message');
+          console.log('[KB-RAG] no hit, skip injection');
         }
       }
     }
