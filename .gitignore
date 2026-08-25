@@ -32,6 +32,7 @@ Thumbs.db
 
 # AI 工作记忆（个人化，不上传）
 .workbuddy/
-
+.superdesign/
+.dev.vars.example
 # 本地 Agent 配置
 .agents/

@@ -333,6 +333,9 @@ class AIChatWidget {
         this.overlay = overlay;
         this.chatContainer = chatContainer;
         this.messagesContainer = document.getElementById('chatMessages');
+        // 智能跟随滚动（beUI message-scroller 的 followOutput 逻辑）
+        this._followThreshold = 56;   // 距底部多少像素内视为"正在跟随"
+        this._nearBottom = true;      // 用户是否贴近底部
         this.inputField = document.getElementById('chatInput');
         this.sendBtn = document.getElementById('chatSendBtn');
         this.closeBtn = chatContainer.querySelector('.ai-chat-close');
@@ -357,6 +360,12 @@ class AIChatWidget {
             }
         });
         this.inputField.addEventListener('input', () => this.autoResizeTextarea());
+
+        // 智能跟随滚动：用户上翻（超过阈值）则解除跟随，回到底部重新跟随
+        this.messagesContainer.addEventListener('scroll', () => {
+            const c = this.messagesContainer;
+            this._nearBottom = (c.scrollHeight - c.scrollTop - c.clientHeight) <= this._followThreshold;
+        }, { passive: true });
 
         // 图片按钮：触发文件选择
         this.imgBtn.addEventListener('click', () => this.imgInput.click());
@@ -423,7 +432,7 @@ class AIChatWidget {
         this.floatBtn.classList.remove('pulse');
         setTimeout(() => {
             this.inputField.focus();
-            this.scrollToBottom();
+            this.scrollToBottom(true);
         }, 100);
     }
 
@@ -455,7 +464,7 @@ class AIChatWidget {
             </div>
         `;
         this.messagesContainer.appendChild(welcome);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
 
         const map = {
             sleep: '请问睡眠测评的具体操作流程是什么？',
@@ -508,7 +517,9 @@ class AIChatWidget {
         t.style.height = Math.min(t.scrollHeight, 160) + 'px';
     }
 
-    scrollToBottom() {
+    scrollToBottom(force = false) {
+        // 用户上翻（超过阈值）时解除自动跟随，不抢滚动控制权
+        if (!force && !this._nearBottom) return;
         requestAnimationFrame(() => {
             this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
         });
@@ -551,7 +562,7 @@ class AIChatWidget {
 
             const aiMsg = { role: 'assistant', content: '' };
             this.addMessage(aiMsg);
-            this.scrollToBottom();
+            this.scrollToBottom(true);
 
             // 图片/OCR 请求为非流式：先显示加载状态，避免用户无感知
             if (hasImage) {
@@ -571,7 +582,7 @@ class AIChatWidget {
                     loading.appendChild(loadingText);
                     bubble.appendChild(loading);
                     startOrbCanvas(canvas);
-                    this.scrollToBottom();
+                    this.scrollToBottom(true);
                 }
             }
 
@@ -815,7 +826,7 @@ class AIChatWidget {
         messageDiv.appendChild(avatar);
         messageDiv.appendChild(bubble);
         this.messagesContainer.appendChild(messageDiv);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
     }
 
     // 图片灯箱：打开
@@ -948,7 +959,7 @@ class AIChatWidget {
         err.className = 'error-message';
         err.textContent = msg;
         this.messagesContainer.appendChild(err);
-        this.scrollToBottom();
+        this.scrollToBottom(true);
         // 网络错误延长显示时间，便于用户看到重试建议
         const ttl = /⚠️|网络|连接/.test(msg) ? 6000 : 3000;
         setTimeout(() => err.remove(), ttl);
