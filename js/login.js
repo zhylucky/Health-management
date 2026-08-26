@@ -373,7 +373,7 @@ async function handleLogin(e) {
 
         setTimeout(() => {
             window.location.href = 'health-management.html';
-        }, 1000);
+        }, 300);
 
     } catch (error) {
         console.error('登录失败:', error.message);

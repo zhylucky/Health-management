@@ -42,7 +42,7 @@
   var TYPE_EM = 75;                   // TYPE 字号基准（800 参考）
   var SIZE = 2.6;                     // 字号乘数：8-23 中文长词 em≈48px（fit 74% 兜底）
   var DPR_CAP = 2;                    // devicePixelRatio 上限（性能）
-  var FONT_FAMILY = "'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif";
+  var FONT_FAMILY = "'PingFang SC','Microsoft YaHei',-apple-system,sans-serif";
   var FONT_WEIGHT = 800;
 
   // THE CLOCK — H 点燃时刻（ms），x 归一化到 ink span，向两端继续延伸

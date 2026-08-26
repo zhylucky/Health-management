@@ -75,14 +75,14 @@
         });
     }
     
-    // 字体加载优化
+    // 字体加载优化（已改用系统字体栈，无外部字体可加载；仅保留兜底钩子）
     function optimizeFontLoading() {
         if ('fonts' in document) {
             // 使用Font Loading API
             const fontLoadPromises = [
-                document.fonts.load('400 16px "Noto Sans SC"'),
-                document.fonts.load('600 16px "Noto Sans SC"'),
-                document.fonts.load('700 16px "Noto Sans SC"')
+                document.fonts.load('400 16px "PingFang SC"'),
+                document.fonts.load('600 16px "PingFang SC"'),
+                document.fonts.load('700 16px "PingFang SC"')
             ];
             
             Promise.all(fontLoadPromises).then(() => {
@@ -170,8 +170,6 @@
     // 资源提示优化
     function addResourceHints() {
         const hints = [
-            { rel: 'dns-prefetch', href: '//fonts.googleapis.com' },
-            { rel: 'dns-prefetch', href: '//fonts.gstatic.com' },
             { rel: 'dns-prefetch', href: '//cdnjs.cloudflare.com' },
             { rel: 'preconnect', href: 'https://lifetide.oss-cn-beijing.aliyuncs.com' }
         ];
