@@ -215,12 +215,6 @@ const state = {
         pageSize: 10,
         totalUsers: 0,
     },
-    dashboardStats: {
-        totalUsers: 0,
-        diabetesUsers: 0,
-        subHealthUsers: 0,
-        otherUsers: 0
-    },
 };
 
 // =================================
@@ -247,10 +241,6 @@ async function loadUsers() {
             state.pagination.totalUsers = (cachedCount !== undefined && cachedCount !== null && cachedCount > 0) 
                 ? cachedCount 
                 : state.pagination.totalUsers;
-            // 只在第一页时更新仪表盘统计信息，避免重复计算
-            if (currentPage === 1) {
-                updateDashboardStats(cachedData.count, cachedData.data);
-            }
             return { success: true, fromCache: true };
         }
 
@@ -326,11 +316,6 @@ async function loadUsers() {
         state.users = result.data;
         state.pagination.totalUsers = result.count;
 
-        // 只在第一页时更新仪表盘统计信息
-        if (currentPage === 1) {
-            updateDashboardStats(result.count, result.data);
-        }
-
         return { success: true };
     } catch (error) {
         debugError('加载用户数据失败:', error);
@@ -347,60 +332,6 @@ async function loadUsers() {
         }
         showToast(errorMessage);
         return { success: false, message: errorMessage };
-    }
-}
-
-// 更新仪表盘统计数据
-function updateDashboardStats(totalCount, userData) {
-    state.dashboardStats = {
-        totalUsers: totalCount || 0,
-        diabetesUsers: userData?.filter(user => user.direction === '糖代谢').length || 0,
-        subHealthUsers: userData?.filter(user => user.direction === '亚健康').length || 0,
-        otherUsers: userData?.filter(user => user.direction === '其他').length || 0
-    };
-    renderDashboard();
-}
-
-// 渲染仪表盘
-function renderDashboard() {
-    const { totalUsers, diabetesUsers, subHealthUsers, otherUsers } = state.dashboardStats;
-    const dashboardHtml = `
-        <div class="dashboard-stats">
-            <div class="stat-card total">
-                <i class="fas fa-users"></i>
-                <div class="stat-info">
-                    <span class="stat-value">${totalUsers}</span>
-                    <span class="stat-label">总用户数</span>
-                </div>
-            </div>
-            <div class="stat-card diabetes">
-                <i class="fas fa-heartbeat"></i>
-                <div class="stat-info">
-                    <span class="stat-value">${diabetesUsers}</span>
-                    <span class="stat-label">糖代谢用户</span>
-                </div>
-            </div>
-            <div class="stat-card sub-health">
-                <i class="fas fa-stethoscope"></i>
-                <div class="stat-info">
-                    <span class="stat-value">${subHealthUsers}</span>
-                    <span class="stat-label">亚健康用户</span>
-                </div>
-            </div>
-            <div class="stat-card other">
-                <i class="fas fa-user-md"></i>
-                <div class="stat-info">
-                    <span class="stat-value">${otherUsers}</span>
-                    <span class="stat-label">其他用户</span>
-                </div>
-            </div>
-        </div>
-    `;
-
-    // 渲染到指定的容器
-    const container = document.querySelector('.dashboard-stats-container');
-    if (container) {
-        container.innerHTML = dashboardHtml;
     }
 }
 
@@ -645,13 +576,8 @@ async function refreshUserList() {
         // 清除缓存，确保获取最新数据
         requestCache.clear();
         
-        // 重新加载用户列表和仪表盘数据
+        // 重新加载用户列表
         await loadAndRenderUsers();
-        
-        // 更新仪表盘统计数据
-        const supabaseClient = await loadSupabase();
-        const { count, data } = await supabaseClient.from('New_user').select('*', { count: 'exact' });
-        updateDashboardStats(count, data);
         
         debugLog('用户列表已自动刷新');
         return true;
@@ -1669,7 +1595,6 @@ async function initUserListPage() {
     initUserListEventListeners();
     createUserModal(); // 预创建模态框
     await loadAndRenderUsers();
-    renderDashboard(); // 在用户列表页面加载完成后渲染仪表盘
     initReportDropdownHover(); // 初始化报告下拉菜单悬停事件
 }
 
