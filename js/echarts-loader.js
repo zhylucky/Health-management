@@ -5,8 +5,9 @@
 
 window.EChartsLoader = (function() {
 	let echartsPromise = null;
-	// 多CDN候选（按优先级）——cdnjs 优先（非跟踪器，稳定）；unpkg 最后备用
+	// 多CDN候选（按优先级）——bootcdn 优先（国内访问快，之前验证过可达）；cdnjs 备用
 	const CDN_CANDIDATES = [
+		'https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js',
 		'https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js',
 		'https://npm.elemecdn.com/echarts@5.4.3/dist/echarts.min.js',
 		'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js',

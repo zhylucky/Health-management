@@ -262,7 +262,7 @@
     <script>
         // 页面加载完成后立即预加载ECharts
         document.addEventListener('DOMContentLoaded', function() {
-            // 延迟1秒后预加载，避免影响首屏加载
+            // 延迟300ms后预加载，避免影响首屏渲染
             setTimeout(() => {
                 if (window.EChartsLoader) {
                     window.EChartsLoader.loadECharts().then(() => {
@@ -271,7 +271,7 @@
                         console.warn('⚠️ ECharts预加载失败:', err);
                     });
                 }
-            }, 1000);
+            }, 300);
         });
     </script>
     <!-- 性能优化配置 -->
@@ -280,7 +280,8 @@
         // 预连接到Supabase服务器和CDN，减少连接时间
         const preconnectUrls = [
             'https://gxohpxiekmpsmkzkcxfc.supabase.co',  // Supabase服务器
-            'https://unpkg.com',  // unpkg CDN (国内访问较快)
+            'https://cdn.bootcdn.net',  // bootcdn CDN (国内访问快，ECharts优先使用)
+            'https://unpkg.com',  // unpkg CDN (备用)
             'https://cdn.jsdelivr.net'  // jsdelivr CDN 备用
         ];
         

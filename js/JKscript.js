@@ -175,6 +175,9 @@ if (document.readyState === 'loading') {
 const requestCache = new Map();
 const CACHE_DURATION = 30000; // 30秒缓存
 
+// 页面片段缓存（三个子页面切换时避免重复请求网络）
+const partialCache = new Map();
+
 // 缓存辅助函数
 function getCacheKey(table, params) {
     return `${table}_${JSON.stringify(params)}`;
@@ -1538,42 +1541,55 @@ async function loadContent(url, clickedElement) {
     const mainContent = document.getElementById('main-content');
     if (!mainContent) return;
 
-    mainContent.innerHTML = '<div class="loading-overlay"><div class="loading-spinner"></div></div>'; // 使用全屏 loading 动画
+    // 立即更新侧边栏选中状态，提供即时反馈
+    if (clickedElement) {
+        document.querySelectorAll('.sidebar li').forEach(li => li.classList.remove('active'));
+        clickedElement.classList.add('active');
+    }
+
+    // 有缓存：直接使用缓存内容，无网络请求、无闪烁
+    if (partialCache.has(url)) {
+        const cached = partialCache.get(url);
+        if (cached && cached.html) {
+            mainContent.innerHTML = cached.html;
+            executePartialScripts(mainContent);
+            if (url.includes('user_list.html')) {
+                window.userListPageInitialized = false;
+                await initUserListPage();
+            }
+            return;
+        }
+    }
+
+    // 首次加载且当前内容为空时，显示加载动画
+    const isEmpty = !mainContent.textContent.trim();
+    if (isEmpty) {
+        mainContent.innerHTML = '<div class="loading-overlay"><div class="loading-spinner"></div></div>';
+    }
 
     try {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`加载失败: ${response.status}`);
-        
+
         const html = await response.text();
-        
+
+        // 缓存本次内容，下次切换即时显示
+        partialCache.set(url, { html, timestamp: Date.now() });
+
         // 1. 插入 HTML
         mainContent.innerHTML = html;
-        
+
         // 2. 查找并执行脚本
-        const scripts = mainContent.querySelectorAll('script');
-        scripts.forEach(script => {
-            const newScript = document.createElement('script');
-            newScript.textContent = script.textContent;
-            // 如果有 src 属性, 也一并复制
-            if (script.src) {
-                newScript.src = script.src;
-            }
-            document.head.appendChild(newScript).parentNode.removeChild(newScript);
-            script.remove(); // 移除页面中已经存在的 script 标签，避免重复
-        });
-        
+        executePartialScripts(mainContent);
+
         // 3. 用户列表页面需要特殊初始化
         if (url.includes('user_list.html')) {
-            // 清除之前的初始化状态，确保每次切换都重新加载
             window.userListPageInitialized = false;
             await initUserListPage();
         }
 
-        // 4. 更新侧边栏状态
-        if (clickedElement) {
-            document.querySelectorAll('.sidebar li').forEach(li => li.classList.remove('active'));
-            clickedElement.classList.add('active');
-        }
+        // 4. 后台预取其他子页面，让后续切换无延迟
+        prefetchPartials();
 
     } catch (error) {
         debugError('加载内容时出错:', error);
@@ -1581,14 +1597,40 @@ async function loadContent(url, clickedElement) {
     }
 }
 
+// 提取并执行页面片段内的脚本
+function executePartialScripts(container) {
+    const scripts = container.querySelectorAll('script');
+    scripts.forEach(script => {
+        const newScript = document.createElement('script');
+        newScript.textContent = script.textContent;
+        if (script.src) {
+            newScript.src = script.src;
+        }
+        document.head.appendChild(newScript).parentNode.removeChild(newScript);
+        script.remove(); // 移除页面中已经存在的 script 标签，避免重复
+    });
+}
+
+// 后台预取尚未加载的子页面（静默缓存，不干扰当前页面）
+function prefetchPartials() {
+    const knownPartials = [
+        '../partialshtml/user_list.html',
+        '../partialshtml/health_trends.html',
+        '../partialshtml/data_analysis.html'
+    ];
+    knownPartials.forEach(url => {
+        if (partialCache.has(url)) return; // 已有缓存则跳过
+        fetch(url)
+            .then(res => res.ok ? res.text() : Promise.reject(new Error(res.status)))
+            .then(html => partialCache.set(url, { html, timestamp: Date.now() }))
+            .catch(err => debugLog(`预取失败: ${url}`, err));
+    });
+}
+
 // 页面初始化函数
 async function initUserListPage() {
-    // 每次切换到用户列表页面都重新初始化，确保数据刷新
     debugLog('初始化用户列表页面');
-    
-    // 清除缓存，强制重新加载数据
-    requestCache.clear();
-    
+
     // 重置分页状态到第一页
     state.pagination.currentPage = 1;
     
