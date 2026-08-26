@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════════
 
 // 知识库 RAG 检索（共享模块，三通道行为一致）
-import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS } from '../../shared/kb-retrieval.js';
+import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval } from '../../shared/kb-retrieval.js';
 
 // 知识库：运行时读取同源静态资源 Markdown/kb.md
 // （Pages Functions 打包器不支持 .md 导入，故随站点发布后 fetch 读取）
@@ -112,14 +112,19 @@ export async function onRequestPost(context) {
     }
 
     // 知识库检索注入（RAG：按问题检索相关片段，不再整库全量注入）
+    // 双通道（prompt + 模型）：命中知识库 → 严格提示词 + KB_MODEL（默认4B，快）；
+    //          未命中 → 通用提示词 + GENERAL_MODEL（默认8B，知识面更全）
+    let kbModelOverride = null;
     if (injectKnowledge === true && messages.length > 0) {
       const knowledgeBase = await loadKnowledgeBase(request);
       const { injection, hits } = buildKnowledgeInjection(messages, knowledgeBase, KB_CONFIG_DEFAULTS);
-      if (injection) {
-        if (hits.length) {
-          console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
-        }
-        const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+      const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+      // 寒暄/闲聊（你好/谢谢等）不换 8B，保持 4B 快速响应
+      const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+      const isChitchat = lastUserMsg ? shouldSkipRetrieval(String(lastUserMsg.content || '')) : false;
+
+      if (hits.length > 0 && injection) {
+        kbModelOverride = env.KB_MODEL || 'Qwen/Qwen3.5-4B';
         if (systemMsgIndex !== -1) {
           messages[systemMsgIndex].content += injection;
         } else {
@@ -128,14 +133,24 @@ export async function onRequestPost(context) {
             content: `你是"个人健康精英Pro+"的AI健康助手。${injection}`
           });
         }
+        console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
       } else {
-        console.log('[KB-RAG] no hit, skip injection');
+        // 未命中知识库 → 通用模式；寒暄仍用 4B 保证响应速度
+        kbModelOverride = isChitchat
+          ? (env.KB_MODEL || 'Qwen/Qwen3.5-4B')
+          : (env.GENERAL_MODEL || 'Qwen/Qwen3-8B');
+        if (systemMsgIndex !== -1) {
+          messages[systemMsgIndex].content = GENERAL_SYSTEM_PROMPT;
+        } else {
+          messages.unshift({ role: 'system', content: GENERAL_SYSTEM_PROMPT });
+        }
+        console.log('[KB-RAG] no hit, switch to general prompt');
       }
     }
 
     const isStream = stream === true;
     const requestBody = {
-      model: model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B',
+      model: kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B',
       messages,
       stream: isStream,
       max_tokens: max_tokens || 800,

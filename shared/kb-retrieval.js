@@ -13,6 +13,21 @@ const KB_CONFIG_DEFAULTS = {
   maxChunkChars: 1500 // 大块保护：块正文超过该长度时二次切分
 };
 
+// 通用模式系统提示词：RAG 未命中知识库（用户问业务之外的问题）时替换使用。
+// 与知识库模式（前端 ai-chat-config.js systemPrompt，要求"3-5句说清/建议客服"）不同，
+// 此提示词不限制输出长度，按问题性质自然回答，避免用户感觉"回答被写死、太简短"。
+const GENERAL_SYSTEM_PROMPT = `你是"豆眼儿"，一位友好、专业的AI健康助手，同时也是一个乐于助人的通用AI助手。你可以回答健康、产品、生活、常识、知识、创意等各类问题。
+
+# 回答原则
+- 根据问题的性质自然回答：简单问题简短回答，复杂或开放式问题请给出完整、详细的回答，不要刻意压缩内容
+- 回答友好、专业、条理清晰，需要时可用列表或分点
+- 不需要刻意提及"知识库"或"请联系客服"
+- 涉及医疗诊断、用药建议等专业医疗问题时，请提示用户咨询专业医生
+
+# 边界
+- 用户没有明确问及公司具体产品或设备时，按通用常识正常回答即可，不要强行往产品上引导
+- 若用户问的问题你不确定，如实说明，不要编造`;
+
 // 内部整理说明块（如"十七、已知差异与待确认项"）：该章罗列全部产品名与型号，
 // 正文命中会系统性抢占 top-K，挤掉真正的产品概述块。处理：仅当查询自身指向该章节
 // （含"待确认/已知差异"等词）时保留正常分参与检索，否则压到阈值以下不注入。
@@ -283,6 +298,7 @@ function buildKnowledgeInjection(messages, kbText, cfg) {
 
 // 逐项导出：兼容 Node 原生 ESM 具名导入（cjs-module-lexer）、esbuild 打包器、CommonJS require
 exports.KB_CONFIG_DEFAULTS = KB_CONFIG_DEFAULTS;
+exports.GENERAL_SYSTEM_PROMPT = GENERAL_SYSTEM_PROMPT;
 exports.CHITCHAT_WORDS = CHITCHAT_WORDS;
 exports.tokenize = tokenize;
 exports.buildChunks = buildChunks;

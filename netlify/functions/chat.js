@@ -2,7 +2,7 @@
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const { buildKnowledgeInjection, KB_CONFIG_DEFAULTS } = require('../../shared/kb-retrieval.js');
+const { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT } = require('../../shared/kb-retrieval.js');
 
 // CORS 白名单：仅允许官方站点与本地开发环境
 const ALLOWED_ORIGINS = [
@@ -109,16 +109,18 @@ exports.handler = async function(event, context) {
 
     // ========== 知识库检索注入（RAG） ==========
     // 按问题检索相关片段，不再整库全量注入
+    // 双通道（prompt + 模型）：命中知识库 → 严格提示词 + KB_MODEL（默认4B，快）；
+    //          未命中 → 通用提示词 + GENERAL_MODEL（默认8B，知识面更全）
+    let kbModelOverride = null;
     if (injectKnowledge === true && !image && messages.length > 0) {
       const knowledgeBase = loadKnowledgeBase();
       if (knowledgeBase) {
         const { injection, hits } = buildKnowledgeInjection(messages, knowledgeBase, KB_CONFIG_DEFAULTS);
-        if (injection) {
-          if (hits.length) {
-            console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
-          }
+        const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+
+        if (hits.length > 0 && injection) {
+          kbModelOverride = process.env.KB_MODEL || 'Qwen/Qwen3.5-4B';
           // 找到system message并注入
-          const systemMsgIndex = messages.findIndex(m => m.role === 'system');
           if (systemMsgIndex !== -1) {
             messages[systemMsgIndex].content += injection;
             console.log('[KB-RAG] Injected into system message');
@@ -129,8 +131,16 @@ exports.handler = async function(event, context) {
             });
             console.log('[KB-RAG] Created new system message');
           }
+          console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
         } else {
-          console.log('[KB-RAG] no hit, skip injection');
+          // 未命中知识库 → 通用模式
+          kbModelOverride = process.env.GENERAL_MODEL || 'Qwen/Qwen3-8B';
+          if (systemMsgIndex !== -1) {
+            messages[systemMsgIndex].content = GENERAL_SYSTEM_PROMPT;
+          } else {
+            messages.unshift({ role: 'system', content: GENERAL_SYSTEM_PROMPT });
+          }
+          console.log('[KB-RAG] no hit, switch to general prompt');
         }
       }
     }
@@ -195,7 +205,7 @@ exports.handler = async function(event, context) {
 
     // 构建请求参数
     const requestBody = {
-      model: model || 'Qwen/Qwen3-8B',
+      model: kbModelOverride || model || 'Qwen/Qwen3-8B',
       messages: messages,
       stream: false,
       max_tokens: 1500,
