@@ -296,19 +296,11 @@
     margin: 12px 0;
 }
 
-/* ─── 流式输出：实时 Markdown 渲染的顺滑优化 ─── */
+/* ─── 流式输出：分块增量渲染的顺滑优化 ─── */
 /* contain 把 .message-text 的内部重排隔离在本块内，每帧更新不会引起整页 reflow 抖动 */
 .message-text {
     contain: layout style;
     word-break: break-word;
-}
-/* 流结束：整体渲染 Markdown 后的轻微淡入 */
-.msg-reveal {
-    animation: msg-reveal .25s ease-out;
-}
-@keyframes msg-reveal {
-    from { opacity: 0; }
-    to { opacity: 1; }
 }
 
 /* 用户蓝色气泡内的内容配色（覆盖深色链接/标题等） */

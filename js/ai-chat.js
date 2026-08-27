@@ -990,18 +990,64 @@ class AIChatWidget {
             bubble.appendChild(textEl);
         }
 
-        // 流式中：隐藏"未闭合"的标记（**、`、```），避免打字时闪现原始符号；
-        // 内容以纯文本呈现，等标记闭合瞬间才变格式（格式仍随输入实时生效）
-        const shown = isStream ? this.tidyForStreaming(content || '') : (content || '');
-        textEl.innerHTML = this.formatContent(shown);
-
-        // 流结束：格式全部定型后整体轻微淡入一次
+        // ── 流结束：完整渲染一次 Markdown（不加淡入动画，避免结束闪一下） ──
         if (!isStream) {
-            textEl.classList.remove('msg-reveal');
-            void textEl.offsetWidth; // 强制 reflow 重启动画
-            textEl.classList.add('msg-reveal');
+            textEl.innerHTML = this.formatContent(content || '');
+            delete textEl.__prefixEl;
+            delete textEl.__tailEl;
+            delete textEl.__streamPrefix;
+            this.scrollToBottom();
+            return;
         }
+
+        // ── 流式中：分块增量渲染 ──
+        // 只有"正在输入的最后一个段落块"每帧重渲染（小、快）；
+        // 已完成的段落移到稳定前缀区，只渲染一次不再动 → 旧内容不跳动
+        const full = content || '';
+        if (!textEl.__prefixEl) {
+            textEl.innerHTML = '';
+            textEl.__prefixEl = document.createElement('div');
+            textEl.__prefixEl.className = 'stream-prefix';
+            textEl.__tailEl = document.createElement('div');
+            textEl.__tailEl.className = 'stream-tail';
+            textEl.appendChild(textEl.__prefixEl);
+            textEl.appendChild(textEl.__tailEl);
+        }
+
+        const split = this.findStreamSplit(full);
+        const prefix = split > 0 ? full.slice(0, split) : '';
+        const tail = split > 0 ? full.slice(split) : full;
+
+        // 前缀仅在"新段落完成"时重渲染；未变化时保持原 DOM 不动
+        if (prefix !== textEl.__streamPrefix) {
+            textEl.__prefixEl.innerHTML = this.formatContent(this.tidyForStreaming(prefix));
+            textEl.__streamPrefix = prefix;
+        }
+        // 尾部（正在输入的块）每帧重渲染，且隐藏未闭合标记
+        textEl.__tailEl.innerHTML = this.formatContent(this.tidyForStreaming(tail));
         this.scrollToBottom();
+    }
+
+    // 找最后一个"安全"的段落分界（\n\n）——不在未闭合代码围栏内
+    findStreamSplit(text) {
+        let inFence = false;
+        let lastSafe = -1;
+        let i = 0;
+        const n = text.length;
+        while (i < n) {
+            if (text.startsWith('```', i)) {
+                inFence = !inFence;
+                i += 3;
+                continue;
+            }
+            if (!inFence && text.startsWith('\n\n', i)) {
+                lastSafe = i;
+                i += 2;
+                continue;
+            }
+            i++;
+        }
+        return lastSafe;
     }
 
     // 流式显示专用：把尚未闭合的 markdown 标记临时隐去
