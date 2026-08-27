@@ -148,9 +148,13 @@ export async function onRequestPost(context) {
       }
     }
 
+    // 最终使用的模型（便于 Cloudflare 日志确认双通道是否生效）
+    const finalModel = kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B';
+    console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'})`);
+
     const isStream = stream === true;
     const requestBody = {
-      model: kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B',
+      model: finalModel,
       messages,
       stream: isStream,
       max_tokens: max_tokens || 800,

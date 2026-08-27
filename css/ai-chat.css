@@ -1,4 +1,4 @@
-﻿/* ════════════════════════════════════════════
+/* ════════════════════════════════════════════
    AI 助手 v3 样式 - 商业医疗蓝白
    仿 Perplexity / Claude / ChatGPT 网页聊天风格
    ════════════════════════════════════════════ */
@@ -38,14 +38,14 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%) scale(0.92);
-    width: min(960px, 95vw);
-    height: min(720px, 88vh);
+    width: min(1080px, 95vw);
+    height: min(810px, 88vh);
     max-width: 95vw;
     max-height: 90vh;
     background: #fff;
     border-radius: 20px;
     box-shadow: 0 25px 80px rgba(0, 0, 0, .25);
-    z-index: 999;
+    z-index: 1001;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -67,7 +67,7 @@
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, .5);
-    z-index: 998;
+    z-index: 1000;
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -361,7 +361,7 @@
     to { opacity: 1; }
 }
 
-/* 图片识图加载状态（点云球动画） */
+/* 缓冲加载状态（点云球动画）：等待首 token / 图片识别时显示 */
 .message-loading {
     display: flex;
     flex-direction: row;
@@ -524,8 +524,8 @@
 
 .ai-chat-input {
     display: flex;
-    align-items: flex-end;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
     background: #f9fafb;
     border: 1px solid #e5e7eb;
     border-radius: 24px;
@@ -536,6 +536,18 @@
     border-color: #2563EB;
     background: #fff;
     box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
+}
+/* 第一行：输入框 + 发送按钮 */
+.ai-chat-input-main {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+/* 第二行：图片 + 思考按钮（在输入文字下方，同一框内） */
+.ai-chat-input-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 .ai-chat-attach {
     flex-shrink: 0;
@@ -556,6 +568,37 @@
     background: #dbeafe;
     color: #2563EB;
     border-color: #60a5fa;
+}
+/* ─── 思考模式切换按钮 ─── */
+.ai-chat-think {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border: 2px solid #d1d5db;
+    border-radius: 50%;
+    cursor: pointer;
+    background: #e5e7eb;
+    color: #374151;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s, color .15s, border-color .15s, box-shadow .15s;
+}
+.ai-chat-think:hover {
+    background: #dbeafe;
+    color: #2563EB;
+    border-color: #60a5fa;
+}
+.ai-chat-think.on {
+    background: #2563EB;
+    color: #fff;
+    border-color: #2563EB;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+}
+.ai-chat-think.on:hover {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
 }
 .chat-input-field {
     flex: 1;
@@ -615,6 +658,7 @@
 .ai-chat-close svg,
 .ai-chat-clear svg,
 .ai-chat-attach svg,
+.ai-chat-think svg,
 .ai-chat-send svg,
 .ai-chat-img-remove svg,
 .image-lightbox-close svg {

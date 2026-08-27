@@ -166,9 +166,13 @@ async function handleChat(request, env) {
       }
     }
 
+    // 最终使用的模型（便于 Cloudflare 日志确认双通道是否生效）
+    const finalModel = kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B';
+    console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'})`);
+
     const isStream = stream === true;
     const requestBody = {
-      model: kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B',
+      model: finalModel,
       messages,
       stream: isStream,
       // 默认 800（原 1500）：降低生成总量，显著缩短非流式等待时间

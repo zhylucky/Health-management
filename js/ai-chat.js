@@ -243,7 +243,30 @@ class AIChatWidget {
     init() {
         this.createHTML();
         this.bindEvents();
+        // 思考模式运行时开关：从 localStorage 读取（持久化），无则取配置默认值
+        const savedThinking = window.localStorage.getItem('ai_chat_thinking');
+        this.thinkingEnabled = savedThinking === 'true'
+            || (savedThinking === null && this.config.thinkingMode === true);
+        // 保持 config 与开关状态同步：请求逻辑读的是 config.thinkingMode
+        this.config.thinkingMode = this.thinkingEnabled;
+        this.updateThinkBtnUI();
         this.showWelcomeMessage();
+    }
+
+    // ═══ 思考模式切换（运行时开关，用于对比开/关输出效果）═══
+    toggleThinking() {
+        this.thinkingEnabled = !this.thinkingEnabled;
+        this.config.thinkingMode = this.thinkingEnabled;
+        // 持久化选择：刷新后仍保持当前模式
+        window.localStorage.setItem('ai_chat_thinking', String(this.thinkingEnabled));
+        this.updateThinkBtnUI();
+    }
+
+    updateThinkBtnUI() {
+        if (!this.thinkBtn) return;
+        this.thinkBtn.classList.toggle('on', this.thinkingEnabled);
+        this.thinkBtn.setAttribute('aria-pressed', String(this.thinkingEnabled));
+        this.thinkBtn.title = this.thinkingEnabled ? '思考模式已开启（点击关闭）' : '开启思考模式（对比输出效果）';
     }
 
     createHTML() {
@@ -288,16 +311,23 @@ class AIChatWidget {
                     </div>
                     <div class="ai-chat-input">
                         <input type="file" id="chatImgInput" accept="image/*" hidden>
-                        <button class="ai-chat-attach" id="chatImgBtn" title="发送图片（也可直接粘贴）">
-                            <i data-lucide="image"></i>
-                        </button>
-                        <textarea class="chat-input-field" id="chatInput"
-                            placeholder="输入消息，回车发送，Shift+回车换行..." rows="1"></textarea>
-                        <button class="ai-chat-send" id="chatSendBtn" title="发送">
-                            <i data-lucide="send"></i>
-                        </button>
+                        <div class="ai-chat-input-main">
+                            <textarea class="chat-input-field" id="chatInput"
+                                placeholder="输入消息，回车发送，Shift+回车换行..." rows="1"></textarea>
+                            <button class="ai-chat-send" id="chatSendBtn" title="发送">
+                                <i data-lucide="send"></i>
+                            </button>
+                        </div>
+                        <div class="ai-chat-input-tools">
+                            <button class="ai-chat-attach" id="chatImgBtn" title="发送图片（也可直接粘贴）">
+                                <i data-lucide="image"></i>
+                            </button>
+                            <button class="ai-chat-think" id="chatThinkBtn" type="button" title="开启思考模式（对比输出效果）" aria-pressed="false">
+                                <i data-lucide="brain"></i>
+                            </button>
+                        </div>
                     </div>
-                    <div class="ai-chat-hint">Enter 发送 · Shift+Enter 换行 · 支持图片粘贴</div>
+                    <div class="ai-chat-hint">Enter 发送 · Shift+Enter 换行 · 支持图片粘贴 · 🧠 可开启思考模式对比效果</div>
                 </div>
             </div>
         `;
@@ -344,6 +374,7 @@ class AIChatWidget {
         this.imgPreview = document.getElementById('chatImgPreview');
         this.imgPreviewImg = document.getElementById('chatImgPreviewImg');
         this.imgInfo = document.getElementById('chatImgInfo');
+        this.thinkBtn = document.getElementById('chatThinkBtn');
         this.clearBtn = chatContainer.querySelector('.ai-chat-clear');
     }
 
@@ -352,6 +383,7 @@ class AIChatWidget {
         this.closeBtn.addEventListener('click', () => this.closeChat());
         this.overlay.addEventListener('click', () => this.closeChat());
         this.sendBtn.addEventListener('click', () => this.sendMessage());
+        this.thinkBtn.addEventListener('click', () => this.toggleThinking());
 
         this.inputField.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -565,8 +597,8 @@ class AIChatWidget {
             this.addMessage(aiMsg);
             this.scrollToBottom(true);
 
-            // 图片/OCR 请求为非流式：先显示加载状态，避免用户无感知
-            if (hasImage) {
+            // 缓冲动画：所有请求先显示点云球 + 状态文字，首个内容到达时由 updateMessageContent 自动移除
+            {
                 const lastDiv = this.messagesContainer.querySelector('.chat-message.assistant:last-child');
                 const bubble = lastDiv && lastDiv.querySelector('.chat-bubble');
                 if (bubble) {
@@ -577,8 +609,9 @@ class AIChatWidget {
                     const canvas = document.createElement('canvas');
                     orbWrap.appendChild(canvas);
                     const loadingText = document.createElement('div');
+                    const loadingTextValue = hasImage ? '⏳ 正在识别图片...' : 'Thinking\u2026';
                     loadingText.className = 'message-loading-text';
-                    loadingText.textContent = '⏳ 正在识别图片...';
+                    loadingText.textContent = loadingTextValue;
                     loading.appendChild(orbWrap);
                     loading.appendChild(loadingText);
                     bubble.appendChild(loading);
@@ -592,6 +625,14 @@ class AIChatWidget {
             // 附加 30ms 最小间隔守卫，高刷屏（120/144Hz）上避免全量重排空转 CPU
             let renderScheduled = false;
             let lastRender = 0;
+
+            // ═══ 人为最短缓冲：即使模型立刻返回，也让"Thinking…"流光至少播满
+            // minBufferTime 再开始输出，营造"AI 在思考"的感知；模型实际慢于此时长则不受影响。
+            // 仅文本流式请求生效；图片/OCR 请求本身耗时较长，直接输出 ═══
+            const bufferStartTime = Date.now();
+            const minBufferTime = this.config.minBufferTime ?? 1800;
+            let bufferPending = !hasImage;  // 是否处于人为缓冲期（图片请求跳过）
+            let bufferText = '';            // 缓冲期内暂存的内容（不渲染）
 
             // 思考模式：创建思考内容区域（像 DeepSeek 网页一样先显示思考再输出回答）
             let thinkingEl = null;
@@ -610,12 +651,19 @@ class AIChatWidget {
                     aiMsg.reasoningContent += text;
                     if (!thinkingBubble) return;
                     if (!thinkingEl) {
+                        // 真实思考开始：移除缓冲动画，让位给思考文本区域
+                        const loadingEl = thinkingBubble && thinkingBubble.querySelector('.message-loading');
+                        if (loadingEl) {
+                            stopOrbCanvas(loadingEl.querySelector('canvas'));
+                            loadingEl.remove();
+                        }
                         thinkingEl = document.createElement('div');
                         thinkingEl.className = 'message-thinking';
                         thinkingEl.textContent = '思考中...';
                         thinkingBubble.insertBefore(thinkingEl, thinkingBubble.firstChild);
                     }
-                    thinkingEl.textContent = '思考中...\n' + text;
+                    const thinkingTxt = '思考中...\n' + text;
+                    thinkingEl.textContent = thinkingTxt;
                     this.scrollToBottom();
                 },
                 onDelta: (delta) => {
@@ -625,6 +673,20 @@ class AIChatWidget {
                         thinkingEl.classList.add('done');
                     }
                     aiMsg.content += delta;
+                    // 人为缓冲期：先暂存内容，流光播满 minBufferTime 后再渲染
+                    if (bufferPending) {
+                        bufferText += delta;
+                        const elapsed = Date.now() - bufferStartTime;
+                        if (elapsed >= minBufferTime) {
+                            bufferPending = false;
+                            if (bufferText) {
+                                this.updateMessageContent(aiMsg, bufferText, true);
+                                bufferText = '';
+                                this.scrollToBottom();
+                            }
+                        }
+                        return;
+                    }
                     if (!renderScheduled) {
                         renderScheduled = true;
                         rafId = requestAnimationFrame(() => {
@@ -643,6 +705,15 @@ class AIChatWidget {
             if (rafId !== null) {
                 cancelAnimationFrame(rafId);
                 rafId = null;
+            }
+            // 若模型在缓冲期内就输出完了，等剩余缓冲时间走完再渲染（保证流光播满）
+            if (bufferPending) {
+                const elapsed = Date.now() - bufferStartTime;
+                const remaining = minBufferTime - elapsed;
+                if (remaining > 0) {
+                    await new Promise(r => setTimeout(r, remaining));
+                }
+                bufferPending = false;
             }
             aiMsg.content = content;
             this.updateMessageContent(aiMsg, content, false);

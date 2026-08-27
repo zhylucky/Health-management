@@ -20,6 +20,10 @@ const AI_CHAT_CONFIG = {
     // 思考模式：true 时像 DeepSeek 网页一样先流式显示思考内容，再输出正式回答
     // 注意：开启思考模式会显著增加响应时间（思考也消耗 token 与时间），嫌慢可改 false
     thinkingMode: false,
+    // 最短缓冲时间（ms）：即使模型立刻返回，也先保持"Thinking…"流光播满此时间再输出，
+    // 营造"AI 在思考"的感知。模型实际响应慢于此时长则不受影响，到即出。
+    // 设为 0 可关闭此效果。
+    minBufferTime: 1800,
     
     // 聊天配置
     maxMessages: 6, // 上下文裁剪到最近 6 条，控制 prompt 体积以提速
