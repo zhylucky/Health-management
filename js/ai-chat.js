@@ -293,13 +293,13 @@ class AIChatWidget {
                         <div class="ai-chat-input-main">
                             <textarea class="chat-input-field" id="chatInput"
                                 placeholder="输入消息，回车发送，Shift+回车换行..." rows="1"></textarea>
-                            <button class="ai-chat-send" id="chatSendBtn" title="发送">
-                                <i data-lucide="send"></i>
-                            </button>
                         </div>
                         <div class="ai-chat-input-tools">
                             <button class="ai-chat-attach" id="chatImgBtn" title="发送图片（也可直接粘贴）">
                                 <i data-lucide="image"></i>
+                            </button>
+                            <button class="ai-chat-send" id="chatSendBtn" title="发送">
+                                <i data-lucide="send"></i>
                             </button>
                         </div>
                     </div>
@@ -641,10 +641,9 @@ class AIChatWidget {
             }
 
             // 流式渲染节流：requestAnimationFrame 对齐屏幕刷新（~16.7ms），
-            // 同帧内到达的增量合并渲染一次，避免固定定时器"攒批蹦出"的生硬感；
-            // 附加 30ms 最小间隔守卫，高刷屏（120/144Hz）上避免全量重排空转 CPU
+            // 同帧内到达的增量合并渲染一次；连续刷新避免 30ms 攒批造成的顿挫。
+            // 每帧全量渲染 markdown 开销可忽略（文本短 + .message-text 已 contain 隔离）
             let renderScheduled = false;
-            let lastRender = 0;
 
             // ═══ 人为最短缓冲：即使模型立刻返回，也让"Thinking…"流光至少播满
             // minBufferTime 再开始输出，营造"AI 在思考"的感知；模型实际慢于此时长则不受影响。
@@ -712,11 +711,7 @@ class AIChatWidget {
                         rafId = requestAnimationFrame(() => {
                             renderScheduled = false;
                             rafId = null;
-                            const now = Date.now();
-                            if (now - lastRender >= 30) {
-                                lastRender = now;
-                                this.updateMessageContent(aiMsg, aiMsg.content, true);
-                            }
+                            this.updateMessageContent(aiMsg, aiMsg.content, true);
                         });
                     }
                 }
@@ -973,6 +968,9 @@ class AIChatWidget {
     }
 
     // 流式更新最后一条 AI 气泡
+    // 实时渲染 Markdown：流式中随输入逐字更新格式（加粗/列表边打边生效）
+    // 全量重渲染并不可怕（文本短、正则解析开销可忽略），顺滑关键在：
+    //   1) rAF 连续刷新（无 30ms 攒批顿挫）  2) .message-text 加 contain 隔离内部重排
     updateMessageContent(msg, content, isStream) {
         const msgDivs = this.messagesContainer.querySelectorAll('.chat-message.assistant');
         const lastDiv = msgDivs[msgDivs.length - 1];
@@ -991,8 +989,42 @@ class AIChatWidget {
             textEl.className = 'message-text';
             bubble.appendChild(textEl);
         }
-        textEl.innerHTML = this.formatContent(content || '');
-        if (isStream) this.scrollToBottom();
+
+        // 流式中：隐藏"未闭合"的标记（**、`、```），避免打字时闪现原始符号；
+        // 内容以纯文本呈现，等标记闭合瞬间才变格式（格式仍随输入实时生效）
+        const shown = isStream ? this.tidyForStreaming(content || '') : (content || '');
+        textEl.innerHTML = this.formatContent(shown);
+
+        // 流结束：格式全部定型后整体轻微淡入一次
+        if (!isStream) {
+            textEl.classList.remove('msg-reveal');
+            void textEl.offsetWidth; // 强制 reflow 重启动画
+            textEl.classList.add('msg-reveal');
+        }
+        this.scrollToBottom();
+    }
+
+    // 流式显示专用：把尚未闭合的 markdown 标记临时隐去
+    // 例："**加粗" → "加粗"（不显示 **）；闭合后 "**加粗**" → 正常变加粗
+    tidyForStreaming(text) {
+        if (!text) return '';
+        let t = text;
+        // 1) 代码围栏 ```：奇数个 → 末个未闭合，去掉（代码内容先以纯文本显示）
+        if (((t.match(/```/g) || []).length) % 2 === 1) {
+            const idx = t.lastIndexOf('```');
+            t = t.slice(0, idx) + t.slice(idx + 3);
+        }
+        // 2) 行内代码 `：单数 → 去掉末个未闭合的反引号
+        if (((t.match(/`/g) || []).length) % 2 === 1) {
+            const idx = t.lastIndexOf('`');
+            t = t.slice(0, idx) + t.slice(idx + 1);
+        }
+        // 3) 粗体 **：单数 → 去掉末个未闭合的 **
+        if (((t.match(/\*\*/g) || []).length) % 2 === 1) {
+            const idx = t.lastIndexOf('**');
+            t = t.slice(0, idx) + t.slice(idx + 2);
+        }
+        return t;
     }
 
     // ═══ 轻量 Markdown 渲染（避免显示原始符号） ═══

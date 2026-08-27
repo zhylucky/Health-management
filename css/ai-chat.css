@@ -296,6 +296,21 @@
     margin: 12px 0;
 }
 
+/* ─── 流式输出：实时 Markdown 渲染的顺滑优化 ─── */
+/* contain 把 .message-text 的内部重排隔离在本块内，每帧更新不会引起整页 reflow 抖动 */
+.message-text {
+    contain: layout style;
+    word-break: break-word;
+}
+/* 流结束：整体渲染 Markdown 后的轻微淡入 */
+.msg-reveal {
+    animation: msg-reveal .25s ease-out;
+}
+@keyframes msg-reveal {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
 /* 用户蓝色气泡内的内容配色（覆盖深色链接/标题等） */
 .chat-message.user .chat-bubble a { color: #fff; text-decoration: underline; }
 .chat-message.user .chat-bubble a:hover { text-decoration: underline; }
@@ -537,16 +552,17 @@
     background: #fff;
     box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
 }
-/* 第一行：输入框 + 发送按钮 */
+/* 第一行：输入框 */
 .ai-chat-input-main {
     display: flex;
     align-items: flex-end;
     gap: 8px;
 }
-/* 第二行：图片按钮（在输入文字下方，同一框内） */
+/* 第二行：工具栏（图片按钮居左，发送按钮居右，避免与上方输入区成斜对角） */
 .ai-chat-input-tools {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
 }
 .ai-chat-attach {
