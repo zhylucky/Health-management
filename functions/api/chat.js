@@ -38,6 +38,9 @@ function json(data, status = 200) {
 async function handleImage(env, body) {
   const { image, imageMode, messages } = body;
   const mode = imageMode === 'ocr' ? 'ocr' : 'understand';
+  // 识图也走流式：复杂图全量生成可达数十秒，透传 SSE 让用户逐字看到结果
+  // OCR 输出通常较短、且不确认上游模型支持流式，保持非流式更稳妥
+  const isStream = body.stream === true && mode !== 'ocr';
   const apiKey = env.SILICONFLOW_API_KEY;
   const imageModel = env.IMAGE_MODEL || 'Qwen/Qwen3.5-4B';
   const ocrModel = env.OCR_MODEL || 'deepseek-ai/DeepSeek-OCR';
@@ -56,9 +59,10 @@ async function handleImage(env, body) {
         { type: 'text', text: prompt }
       ]
     }],
-    stream: false,
-    max_tokens: mode === 'ocr' ? 1200 : 2000,
-    temperature: mode === 'ocr' ? 0.1 : 0.7,
+    stream: isStream,
+    // OCR/understand 均 1200：长报告可能超 1000 token；understand 从 2000 收紧到 1200 缩短生成耗时
+    max_tokens: 1200,
+    temperature: mode === 'ocr' ? 0.1 : 0.4,
     top_p: 0.8
   };
 
@@ -82,6 +86,20 @@ async function handleImage(env, body) {
     const errText = await resp.text();
     throw new Error(`识图请求失败：${resp.status} - ${errText.slice(0, 200)}`);
   }
+
+  // 流式：SSE 直接透传给前端（与文本对话同路径）
+  if (isStream) {
+    if (!resp.body) throw new Error('识图流式响应缺少数据流，请重试');
+    return new Response(resp.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+      }
+    });
+  }
+
   const data = await resp.json();
   const content = data.choices?.[0]?.message?.content;
   return {
@@ -103,7 +121,8 @@ export async function onRequestPost(context) {
     // ── 图片消息 ──
     if (image) {
       const result = await handleImage(env, body);
-      return json(result);
+      // 流式时返回的是 SSE Response 直接透传；否则是普通对象转 JSON
+      return result instanceof Response ? result : json(result);
     }
 
     // ── 文本对话 ──

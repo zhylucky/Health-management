@@ -243,30 +243,9 @@ class AIChatWidget {
     init() {
         this.createHTML();
         this.bindEvents();
-        // 思考模式运行时开关：从 localStorage 读取（持久化），无则取配置默认值
-        const savedThinking = window.localStorage.getItem('ai_chat_thinking');
-        this.thinkingEnabled = savedThinking === 'true'
-            || (savedThinking === null && this.config.thinkingMode === true);
-        // 保持 config 与开关状态同步：请求逻辑读的是 config.thinkingMode
-        this.config.thinkingMode = this.thinkingEnabled;
-        this.updateThinkBtnUI();
+        // 思考模式已移除（对比效果差异小且耗时长），固定关闭
+        this.config.thinkingMode = false;
         this.showWelcomeMessage();
-    }
-
-    // ═══ 思考模式切换（运行时开关，用于对比开/关输出效果）═══
-    toggleThinking() {
-        this.thinkingEnabled = !this.thinkingEnabled;
-        this.config.thinkingMode = this.thinkingEnabled;
-        // 持久化选择：刷新后仍保持当前模式
-        window.localStorage.setItem('ai_chat_thinking', String(this.thinkingEnabled));
-        this.updateThinkBtnUI();
-    }
-
-    updateThinkBtnUI() {
-        if (!this.thinkBtn) return;
-        this.thinkBtn.classList.toggle('on', this.thinkingEnabled);
-        this.thinkBtn.setAttribute('aria-pressed', String(this.thinkingEnabled));
-        this.thinkBtn.title = this.thinkingEnabled ? '思考模式已开启（点击关闭）' : '开启思考模式（对比输出效果）';
     }
 
     createHTML() {
@@ -322,12 +301,9 @@ class AIChatWidget {
                             <button class="ai-chat-attach" id="chatImgBtn" title="发送图片（也可直接粘贴）">
                                 <i data-lucide="image"></i>
                             </button>
-                            <button class="ai-chat-think" id="chatThinkBtn" type="button" title="开启思考模式（对比输出效果）" aria-pressed="false">
-                                <i data-lucide="brain"></i>
-                            </button>
                         </div>
                     </div>
-                    <div class="ai-chat-hint">Enter 发送 · Shift+Enter 换行 · 支持图片粘贴 · 🧠 可开启思考模式对比效果</div>
+                    <div class="ai-chat-hint">Enter 发送 · Shift+Enter 换行 · 支持图片粘贴</div>
                 </div>
             </div>
         `;
@@ -374,7 +350,6 @@ class AIChatWidget {
         this.imgPreview = document.getElementById('chatImgPreview');
         this.imgPreviewImg = document.getElementById('chatImgPreviewImg');
         this.imgInfo = document.getElementById('chatImgInfo');
-        this.thinkBtn = document.getElementById('chatThinkBtn');
         this.clearBtn = chatContainer.querySelector('.ai-chat-clear');
     }
 
@@ -383,7 +358,6 @@ class AIChatWidget {
         this.closeBtn.addEventListener('click', () => this.closeChat());
         this.overlay.addEventListener('click', () => this.closeChat());
         this.sendBtn.addEventListener('click', () => this.sendMessage());
-        this.thinkBtn.addEventListener('click', () => this.toggleThinking());
 
         this.inputField.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -513,7 +487,8 @@ class AIChatWidget {
     }
 
     // 统一处理图片文件（上传 / 粘贴）
-    handleImageFile(file) {
+    // 发送前先压缩：避免手机原图（3-5MB）base64 后在 前端→函数→模型 链路上传两遍拖慢识图
+    async handleImageFile(file) {
         if (!file.type.startsWith('image/')) {
             this.showError('仅支持图片文件');
             return;
@@ -522,17 +497,62 @@ class AIChatWidget {
             this.showError('图片大小不能超过 5MB');
             return;
         }
-        const reader = new FileReader();
-        reader.onload = () => {
-            this.pendingImage = reader.result;
-            this.pendingImageName = file.name || 'pasted-image';
-            this.imgPreviewImg.src = this.pendingImage;
-            this.imgInfo.textContent = `${this.pendingImageName} · ${(file.size / 1024).toFixed(1)} KB`;
-            this.imgPreview.hidden = false;
-            this.openChat();
-            this.inputField.focus();
-        };
-        reader.readAsDataURL(file);
+
+        let blob = file;
+        // 小图直接用原图，避免无谓重压缩的画质损失
+        if (file.size > 300 * 1024) {
+            try {
+                const compressed = await this.compressImage(file, 1280);
+                if (compressed && compressed.size < file.size) blob = compressed;
+            } catch (e) {
+                console.warn('[ImageCompress] 压缩失败，使用原图：', e);
+            }
+        }
+
+        const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        }).catch(() => null);
+        if (!dataUrl) {
+            this.showError('图片读取失败，请重试');
+            return;
+        }
+
+        this.pendingImage = dataUrl;
+        this.pendingImageName = file.name || 'pasted-image';
+        this.imgPreviewImg.src = dataUrl;
+        this.imgInfo.textContent =
+            `${this.pendingImageName} · ${(blob.size / 1024).toFixed(1)} KB` +
+            (blob !== file ? '（已压缩）' : '');
+        this.imgPreview.hidden = false;
+        this.openChat();
+        this.inputField.focus();
+    }
+
+    // canvas 压缩：等比缩到最长边 maxEdge，转 JPEG（透明区域铺白底）
+    compressImage(file, maxEdge) {
+        return new Promise((resolve, reject) => {
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+                URL.revokeObjectURL(url);
+                try {
+                    const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+                    canvas.height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/jpeg', 0.8);
+                } catch (e) { reject(e); }
+            };
+            img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')); };
+            img.src = url;
+        });
     }
 
     clearImage() {
@@ -782,14 +802,19 @@ class AIChatWidget {
             })
         ];
 
-        // 识图/OCR 为非流式请求，模型需理解图片+一次性生成文本，耗时长，放宽超时；
-        // 文本对话走流式逐字输出，30s 足够
-        const timeoutMs = hasImage ? 90000 : 30000;
+        // 识图/OCR 也走流式：复杂图全量生成可达数十秒，逐字输出让用户先看到内容；
+        // 整体完成仍可能较慢，故保留更宽的超时
+        const timeoutMs = hasImage ? 90000 : 60000;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
         const strategyCfg = strategy || {};
-        const isStream = this.config.stream !== false && !hasImage;
+        const isStream = this.config.stream !== false;
+        // 用户文字含"提取/识别文字"等意图时走 OCR 模型（DeepSeek-OCR），否则多模态理解
+        const wantsOcr = /(提取|识别|读取|转换|转).{0,8}文字|文字.{0,8}(提取|识别|读取|内容)|ocr/i.test(userMessage || '');
         this._isStreaming = isStream;
+
+        // 计时器不随响应头到达而清除：流式时 abort 会中断挂起的 body 读取，
+        // 让超时上限同时覆盖"生成+传输"全过程，避免断流后无限白屏
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
             const response = await fetch(this.functionUrl, {
@@ -809,29 +834,29 @@ class AIChatWidget {
                     max_tokens: thinkingMode
                         ? Math.min((strategyCfg.maxTokens ?? 800) * 2, 4000)
                         : (strategyCfg.maxTokens ?? 800),
-                    ...(hasImage ? { image, imageMode: 'understand' } : {}),
+                    ...(hasImage ? { image, imageMode: wantsOcr ? 'ocr' : 'understand' } : {}),
                     ...(thinkingMode ? { enable_thinking: true } : {})
                 }),
                 signal: controller.signal,
                 cache: 'no-store'
             });
-            clearTimeout(timer);
 
             if (!response.ok) {
+                clearTimeout(timer);
                 const errText = await response.text().catch(() => '');
                 throw new Error(`AI 服务请求失败：${response.status}${errText ? ` ${errText.slice(0, 200)}` : ''}`);
             }
 
-            if (hasImage) {
-                const data = await response.json();
-                return data?.choices?.[0]?.message?.content
-                    || data?.message?.content
-                    || '';
-            }
-            if (isStream) {
-                return await this.parseSSE(response, onDelta);
+            // 按 Content-Type 解析：后端透传 SSE（含识图流式）则逐字输出；
+            // 未升级/不支持流式的后端（如 OCR）返回 JSON 时自动整体读取，兼容部署先后顺序
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('text/event-stream')) {
+                const result = await this.parseSSE(response, onDelta, onReasoning);
+                clearTimeout(timer);
+                return result;
             }
             const data = await response.json();
+            clearTimeout(timer);
             return data?.choices?.[0]?.message?.content
                 || data?.message?.content
                 || '';

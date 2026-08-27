@@ -543,7 +543,7 @@
     align-items: flex-end;
     gap: 8px;
 }
-/* 第二行：图片 + 思考按钮（在输入文字下方，同一框内） */
+/* 第二行：图片按钮（在输入文字下方，同一框内） */
 .ai-chat-input-tools {
     display: flex;
     align-items: center;
@@ -568,37 +568,6 @@
     background: #dbeafe;
     color: #2563EB;
     border-color: #60a5fa;
-}
-/* ─── 思考模式切换按钮 ─── */
-.ai-chat-think {
-    flex-shrink: 0;
-    width: 40px;
-    height: 40px;
-    border: 2px solid #d1d5db;
-    border-radius: 50%;
-    cursor: pointer;
-    background: #e5e7eb;
-    color: #374151;
-    font-size: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background .15s, color .15s, border-color .15s, box-shadow .15s;
-}
-.ai-chat-think:hover {
-    background: #dbeafe;
-    color: #2563EB;
-    border-color: #60a5fa;
-}
-.ai-chat-think.on {
-    background: #2563EB;
-    color: #fff;
-    border-color: #2563EB;
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
-}
-.ai-chat-think.on:hover {
-    background: #1d4ed8;
-    border-color: #1d4ed8;
 }
 .chat-input-field {
     flex: 1;
@@ -658,7 +627,6 @@
 .ai-chat-close svg,
 .ai-chat-clear svg,
 .ai-chat-attach svg,
-.ai-chat-think svg,
 .ai-chat-send svg,
 .ai-chat-img-remove svg,
 .image-lightbox-close svg {
