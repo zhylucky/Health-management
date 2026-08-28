@@ -798,8 +798,8 @@ class AIChatWidget {
         ];
 
         // 识图/OCR 也走流式：复杂图全量生成可达数十秒，逐字输出让用户先看到内容；
-        // 整体完成仍可能较慢，故保留更宽的超时
-        const timeoutMs = hasImage ? 90000 : 60000;
+        // 整体完成仍可能较慢，故保留更宽的超时（识图上限高，避免 2000 token 长输出中途被掐断）
+        const timeoutMs = hasImage ? 180000 : 60000;
         const controller = new AbortController();
         const strategyCfg = strategy || {};
         const isStream = this.config.stream !== false;

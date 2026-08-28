@@ -60,8 +60,9 @@ async function handleImage(request, env, body) {
       ]
     }],
     stream: isStream,
-    // OCR/understand 均 1200：长报告可能超 1000 token；understand 从 2000 收紧到 1200 缩短生成耗时
-    max_tokens: 1200,
+    // understand 2000：复杂图描述/长报告可能超 1000 token，太低会触发 length 截断（输出中断）；
+    // OCR 1200：文字提取输出较短
+    max_tokens: mode === 'ocr' ? 1200 : 2000,
     temperature: mode === 'ocr' ? 0.1 : 0.4,
     top_p: 0.8
   };
