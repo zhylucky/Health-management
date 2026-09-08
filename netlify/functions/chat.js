@@ -2,7 +2,7 @@
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT } = require('../../shared/kb-retrieval.js');
+const { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, trimMessagesToBudget } = require('../../shared/kb-retrieval.js');
 
 // CORS 白名单：仅允许官方站点与本地开发环境
 const ALLOWED_ORIGINS = [
@@ -204,9 +204,12 @@ exports.handler = async function(event, context) {
     }
 
     // 构建请求参数
+    // 超窗降级兜底：估算超出预算时从最旧历史丢弃（保留 system 与最新提问），避免上游 400
+    const actualModel = kbModelOverride || model || 'Qwen/Qwen3-8B';
+    const trimmedMessages = trimMessagesToBudget(messages, 26000);
     const requestBody = {
-      model: kbModelOverride || model || 'Qwen/Qwen3-8B',
-      messages: messages,
+      model: actualModel,
+      messages: trimmedMessages,
       stream: false,
       max_tokens: 1500,
       temperature: 0.5,
@@ -262,6 +265,8 @@ exports.handler = async function(event, context) {
           statusCode: 200,
           headers: {
             'Content-Type': 'application/json',
+            // 回传实际使用的模型：供前端「自动续写」请求显式回传同一模型，保证首尾一致
+            'X-AI-Model': actualModel,
             ...corsHeaders
           },
           body: JSON.stringify(data)

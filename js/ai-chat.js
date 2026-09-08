@@ -202,6 +202,15 @@ function stopOrbCanvas(canvas) {
     }
 }
 
+// 粗估 token（与 shared/kb-retrieval.js 同规则）：CJK 约 1 字 = 1 token，其余约 4 字符 = 1 token。
+// 仅用于前端上下文超窗保护的安全判断，不追求精确。
+function estimateChatTokens(text) {
+    if (!text) return 0;
+    const s = String(text);
+    const cjk = (s.match(/[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []).length;
+    return cjk + Math.ceil((s.length - cjk) / 4);
+}
+
 class AIChatWidget {
     constructor() {
         this.isOpen = false;
@@ -229,22 +238,20 @@ class AIChatWidget {
                 ocrModel: 'deepseek-ai/DeepSeek-OCR',
                 stream: true,
                 systemPrompt: '你是健康科技团队的AI健康助手。',
-                maxMessages: 9,
+                maxMessages: 24,
                 ui: {}
             };
         }
         this.functionUrl = this.config.functionUrl;
         this.model = this.config.model;
         this.systemPrompt = this.config.systemPrompt;
-        this.maxMessages = this.config.maxMessages || 9;
+        this.maxMessages = this.config.maxMessages || 24;
         this.init();
     }
 
     init() {
         this.createHTML();
         this.bindEvents();
-        // 思考模式已移除（对比效果差异小且耗时长），固定关闭
-        this.config.thinkingMode = false;
         this.showWelcomeMessage();
     }
 
@@ -613,7 +620,7 @@ class AIChatWidget {
             this.validateAndCleanMessages();
             const strategy = this.classifyIntent(message || '');
 
-            const aiMsg = { role: 'assistant', content: '', reasoningContent: '' };
+            const aiMsg = { role: 'assistant', content: '' };
             this.addMessage(aiMsg);
             this.scrollToBottom(true);
 
@@ -653,44 +660,9 @@ class AIChatWidget {
             let bufferPending = !hasImage;  // 是否处于人为缓冲期（图片请求跳过）
             let bufferText = '';            // 缓冲期内暂存的内容（不渲染）
 
-            // 思考模式：创建思考内容区域（像 DeepSeek 网页一样先显示思考再输出回答）
-            let thinkingEl = null;
-            let thinkingDone = false;
-            const thinkingBubble = (() => {
-                const divs = this.messagesContainer.querySelectorAll('.chat-message.assistant');
-                const lastDiv = divs[divs.length - 1];
-                return lastDiv ? lastDiv.querySelector('.chat-bubble') : null;
-            })();
-
-            const content = await this.callAIAPI(message, {
-                strategy,
-                image: hasImage ? userMsg.image : null,
-                onReasoning: (text) => {
-                    // 记录思考内容：SiliconFlow 思考模式要求下一轮请求必须原样回传 reasoning_content
-                    aiMsg.reasoningContent += text;
-                    if (!thinkingBubble) return;
-                    if (!thinkingEl) {
-                        // 真实思考开始：移除缓冲动画，让位给思考文本区域
-                        const loadingEl = thinkingBubble && thinkingBubble.querySelector('.message-loading');
-                        if (loadingEl) {
-                            stopOrbCanvas(loadingEl.querySelector('canvas'));
-                            loadingEl.remove();
-                        }
-                        thinkingEl = document.createElement('div');
-                        thinkingEl.className = 'message-thinking';
-                        thinkingEl.textContent = '思考中...';
-                        thinkingBubble.insertBefore(thinkingEl, thinkingBubble.firstChild);
-                    }
-                    const thinkingTxt = '思考中...\n' + text;
-                    thinkingEl.textContent = thinkingTxt;
-                    this.scrollToBottom();
-                },
+            // 流式渲染回调：提取为对象，供首轮请求与自动续写请求复用同一渲染管线
+            const streamHandlers = {
                 onDelta: (delta) => {
-                    // 回答开始：思考区域标记完成（停止闪烁动画）
-                    if (thinkingEl && !thinkingDone) {
-                        thinkingDone = true;
-                        thinkingEl.classList.add('done');
-                    }
                     aiMsg.content += delta;
                     // 人为缓冲期：先暂存内容，流光播满 minBufferTime 后再渲染
                     if (bufferPending) {
@@ -715,6 +687,11 @@ class AIChatWidget {
                         });
                     }
                 }
+            };
+            const result = await this.callAIAPI(message, {
+                strategy,
+                image: hasImage ? userMsg.image : null,
+                ...streamHandlers
             });
             // 流已结束：取消挂起的渲染帧，交给下面的最终渲染兜底
             if (rafId !== null) {
@@ -730,8 +707,38 @@ class AIChatWidget {
                 }
                 bufferPending = false;
             }
-            aiMsg.content = content;
-            this.updateMessageContent(aiMsg, content, false);
+            // ═══ 输出截断自动续写：撞 max_tokens（length）或流中途断开（interrupted）时，
+            // 自动发起一次续写请求，把剩余内容无缝接进同一气泡，避免"输出到一半自己停"。
+            // 识图请求不自动续写（重发图片代价高），仅提示 ═══
+            let finalText = result.text;
+            if (result.finishReason === 'length' || result.finishReason === 'interrupted') {
+                if (!hasImage) {
+                    const seed = aiMsg.content; // 已流进气泡的原始半截内容（不含提示后缀）
+                    try {
+                        const cont = await this.callAIAPI(message, {
+                            strategy,
+                            ...streamHandlers,
+                            continuation: seed,
+                            // 沿用首轮实际模型，保证续写与已输出半截同模型同风格
+                            model: result.usedModel
+                        });
+                        finalText = seed + (cont.text || '');
+                        // interrupted 时 cont.text 已自带中断提示，不重复追加
+                        if (cont.finishReason === 'length') {
+                            finalText += '\n\n⚠️ 回答较长仍未输出完整，可发送「继续」补全后续内容';
+                        }
+                    } catch (e) {
+                        console.warn('自动续写失败:', e.message);
+                        finalText = result.finishReason === 'interrupted'
+                            ? result.text // 已含"连接中断，可发送继续"提示
+                            : result.text + '\n\n⚠️ 回答已达长度上限被截断，可发送「继续」查看后续';
+                    }
+                } else if (result.finishReason === 'length') {
+                    finalText += '\n\n⚠️ 识别内容已达长度上限被截断，可重新发送图片追问细节';
+                }
+            }
+            aiMsg.content = finalText;
+            this.updateMessageContent(aiMsg, finalText, false);
             this.messages.push(aiMsg);
         } catch (error) {
             console.error('AI API 调用失败:', error);
@@ -773,43 +780,60 @@ class AIChatWidget {
         if (typeof navigator !== 'undefined' && navigator.onLine === false) {
             throw new Error('当前网络不可用');
         }
-        const { strategy, image, onDelta, onReasoning } = options;
+        const { strategy, image, onDelta, continuation, model: requestedModel } = options;
         const hasImage = !!image;
-        const thinkingMode = this.config.thinkingMode === true && !hasImage;
 
         const enhancedSystemPrompt = this.systemPrompt + `\n\n重要提醒：${this.getCurrentTime()}，请确保时间信息的准确性。`;
         // this.messages 已包含刚发送的 userMsg，无需重复追加
+        const history = this.messages.slice(-this.maxMessages).map(msg => ({
+            role: msg.role === 'ai' ? 'assistant' : msg.role,
+            content: typeof msg.content === 'string' ? msg.content : ''
+        }));
+
+        // ═══ 超窗自动降级裁剪：system+历史超出 token 预算时从最旧的丢弃，
+        // 始终保留最新提问；最后一条自身超预算时截断其内容。
+        // 为后端知识库注入与模型输出预留空间，避免上下文超窗被上游 400 拒绝 ═══
+        const historyBudget = this.config.contextBudget?.historyTokenBudget || 12000;
+        let est = estimateChatTokens(enhancedSystemPrompt);
+        history.forEach(m => { est += estimateChatTokens(m.content) + 4; });
+        while (history.length > 1 && est > historyBudget) {
+            est -= estimateChatTokens(history[0].content) + 4;
+            history.shift();
+        }
+        if (history.length > 0) {
+            const last = history[history.length - 1];
+            const lastBudget = Math.max(200, historyBudget - est + estimateChatTokens(last.content) + 4);
+            if (estimateChatTokens(last.content) > lastBudget) {
+                last.content = last.content.slice(0, lastBudget) + '\n…（内容过长，已截断）';
+            }
+        }
+
         const messageHistory = [
             { role: 'system', content: enhancedSystemPrompt },
-            ...this.messages.slice(-this.maxMessages).map(msg => {
-                const item = {
-                    role: msg.role === 'ai' ? 'assistant' : msg.role,
-                    content: typeof msg.content === 'string' ? msg.content : ''
-                };
-                // SiliconFlow 思考模式要求：上一轮 assistant 的 reasoning_content 必须原样回传，
-                // 否则多轮对话报 400："The reasoning_content in the thinking mode must be passed back to the API."
-                // 但仅当本轮仍处于思考模式时才回传：关闭思考或识图（enable_thinking=false）时
-                // 仍携带 reasoning_content 会被平台判定参数非法
-                if (item.role === 'assistant' && thinkingMode && msg.reasoningContent) {
-                    item.reasoning_content = msg.reasoningContent;
-                }
-                return item;
-            })
+            ...history,
+            // 自动续写请求：把半截回答作为 assistant 消息回传 + 续写指令，让模型无缝接续输出
+            ...(continuation ? [
+                { role: 'assistant', content: continuation },
+                { role: 'user', content: '请从中断处直接继续输出剩余内容，不要重复已输出的部分，不要任何开场语。' }
+            ] : [])
         ];
 
-        // 识图/OCR 也走流式：复杂图全量生成可达数十秒，逐字输出让用户先看到内容；
-        // 整体完成仍可能较慢，故保留更宽的超时（识图上限高，避免 2000 token 长输出中途被掐断）
-        const timeoutMs = hasImage ? 180000 : 60000;
+        // 识图/OCR 也走流式：复杂图全量生成可达数十秒，逐字输出让用户先看到内容
+        // ═══ 空闲超时（不再是总时长超时）：只要数据持续到达就不掐断，长时间无数据才判定断连。
+        // 上下文越大生成越久，固定总超时会把正常长回答输出到一半 abort 掉 ═══
+        const idleMs = hasImage ? 90000 : 45000;
         const controller = new AbortController();
+        let idleTimer = null;
+        const resetIdleTimer = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => controller.abort(), idleMs);
+        };
+        resetIdleTimer();
         const strategyCfg = strategy || {};
         const isStream = this.config.stream !== false;
         // 用户文字含"提取/识别文字"等意图时走 OCR 模型（DeepSeek-OCR），否则多模态理解
         const wantsOcr = /(提取|识别|读取|转换|转).{0,8}文字|文字.{0,8}(提取|识别|读取|内容)|ocr/i.test(userMessage || '');
         this._isStreaming = isStream;
-
-        // 计时器不随响应头到达而清除：流式时 abort 会中断挂起的 body 读取，
-        // 让超时上限同时覆盖"生成+传输"全过程，避免断流后无限白屏
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
             const response = await fetch(this.functionUrl, {
@@ -820,24 +844,22 @@ class AIChatWidget {
                 },
                 body: JSON.stringify({
                     messages: messageHistory,
-                    // 图片消息自动切换到多模态模型
-                    model: hasImage ? this.config.imageModel : this.model,
-                    injectKnowledge: true,
+                    // 续写请求显式回传首轮实际模型（RAG 可能把模型切到 8B），
+                    // 避免回落前端默认模型导致同一条回答首尾不一致；无该信息时回落默认
+                    model: requestedModel || (hasImage ? this.config.imageModel : this.model),
+                    // 续写请求跳过知识库注入：保持与首轮相同的模型与提示词，避免回答中途换通道
+                    injectKnowledge: continuation ? false : true,
                     stream: isStream,
                     temperature: strategyCfg.temperature ?? 0.5,
-                    // 思考模式开启时翻倍输出上限（思考+回答都计入 max_tokens），上限 4000
-                    max_tokens: thinkingMode
-                        ? Math.min((strategyCfg.maxTokens ?? 800) * 2, 4000)
-                        : (strategyCfg.maxTokens ?? 800),
-                    ...(hasImage ? { image, imageMode: wantsOcr ? 'ocr' : 'understand' } : {}),
-                    ...(thinkingMode ? { enable_thinking: true } : {})
+                    max_tokens: strategyCfg.maxTokens ?? 800,
+                    ...(hasImage ? { image, imageMode: wantsOcr ? 'ocr' : 'understand' } : {})
                 }),
                 signal: controller.signal,
                 cache: 'no-store'
             });
 
             if (!response.ok) {
-                clearTimeout(timer);
+                if (idleTimer) clearTimeout(idleTimer);
                 const errText = await response.text().catch(() => '');
                 throw new Error(`AI 服务请求失败：${response.status}${errText ? ` ${errText.slice(0, 200)}` : ''}`);
             }
@@ -845,18 +867,25 @@ class AIChatWidget {
             // 按 Content-Type 解析：后端透传 SSE（含识图流式）则逐字输出；
             // 未升级/不支持流式的后端（如 OCR）返回 JSON 时自动整体读取，兼容部署先后顺序
             const contentType = response.headers.get('content-type') || '';
+            // 后端通过 X-AI-Model 头回传实际使用的模型（RAG 可能已切 KB/GENERAL 模型），
+            // 供「自动续写」请求回传同一模型，保证同一条回答首尾模型一致；旧后端无该头时为空
+            const usedModel = response.headers.get('x-ai-model');
             if (contentType.includes('text/event-stream')) {
-                const result = await this.parseSSE(response, onDelta, onReasoning);
-                clearTimeout(timer);
-                return result;
+                const result = await this.parseSSE(response, onDelta, resetIdleTimer);
+                if (idleTimer) clearTimeout(idleTimer);
+                return { ...result, usedModel };
             }
             const data = await response.json();
-            clearTimeout(timer);
-            return data?.choices?.[0]?.message?.content
-                || data?.message?.content
-                || '';
+            if (idleTimer) clearTimeout(idleTimer);
+            return {
+                text: data?.choices?.[0]?.message?.content
+                    || data?.message?.content
+                    || '',
+                finishReason: data?.choices?.[0]?.finish_reason || null,
+                usedModel
+            };
         } catch (err) {
-            clearTimeout(timer);
+            if (idleTimer) clearTimeout(idleTimer);
             if (err?.name === 'AbortError') throw new Error('请求超时');
             throw err;
         } finally {
@@ -864,49 +893,56 @@ class AIChatWidget {
         }
     }
 
-    // SSE 流式解析（OpenAI/SiliconFlow 兼容；支持思考模式 reasoning_content）
-    async parseSSE(response, onDelta, onReasoning) {
+    // SSE 流式解析（OpenAI/SiliconFlow 兼容）
+    // 返回 { text, finishReason }：finishReason='length' 表示输出撞 max_tokens 被截断，
+    // 'interrupted' 表示流中途断开（空闲超时/网络断），此时保留已输出的半截内容
+    async parseSSE(response, onDelta, onActivity) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
         let fullText = '';
-        let reasoningLen = 0;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let lineEnd;
-            while ((lineEnd = buffer.indexOf('\n')) !== -1) {
-                const line = buffer.slice(0, lineEnd).trim();
-                buffer = buffer.slice(lineEnd + 1);
-                if (!line || !line.startsWith('data:')) continue;
-                const payload = line.slice(5).trim();
-                if (payload === '[DONE]') continue;
-                try {
-                    const json = JSON.parse(payload);
-                    const frame = json.choices?.[0]?.delta || {};
-                    // 思考内容（Qwen3.5 思考模式）
-                    const reasoning = frame.reasoning_content;
-                    if (typeof reasoning === 'string' && reasoning) {
-                        reasoningLen += reasoning.length;
-                        if (onReasoning) onReasoning(reasoning);
-                    }
-                    // 正式回答
-                    const delta = frame.content;
-                    if (typeof delta === 'string' && delta) {
-                        fullText += delta;
-                        if (onDelta) onDelta(delta);
-                    }
-                } catch (e) { /* 忽略无法解析的帧 */ }
+        let finishReason = null;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                // 收到任何数据都重置空闲计时：健康的长输出不会被掐断
+                if (value && value.length && onActivity) onActivity();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let lineEnd;
+                while ((lineEnd = buffer.indexOf('\n')) !== -1) {
+                    const line = buffer.slice(0, lineEnd).trim();
+                    buffer = buffer.slice(lineEnd + 1);
+                    if (!line || !line.startsWith('data:')) continue;
+                    const payload = line.slice(5).trim();
+                    if (payload === '[DONE]') continue;
+                    try {
+                        const json = JSON.parse(payload);
+                        const choice = json.choices?.[0] || {};
+                        const frame = choice.delta || {};
+                        if (choice.finish_reason) finishReason = choice.finish_reason;
+                        // 正式回答
+                        const delta = frame.content;
+                        if (typeof delta === 'string' && delta) {
+                            fullText += delta;
+                            if (onDelta) onDelta(delta);
+                        }
+                    } catch (e) { /* 忽略无法解析的帧 */ }
+                }
             }
+        } catch (err) {
+            // 流中途断开（空闲超时/网络断）：半截回答不丢弃，返回给上层自动续写，
+            // 续写失败时也能保留内容 + 提示，而不是"输出到一半直接停"。
+            // 注意：只返回原始半截文本，提示文案由上层渲染时追加，避免污染对话历史
+            if (fullText) {
+                return { text: fullText, finishReason: 'interrupted' };
+            }
+            throw err;
         }
         if (!fullText) {
-            // 思考完成但未输出回答（思考可能耗尽了输出上限）——给友好提示
-            throw new Error(reasoningLen > 0
-                ? '模型思考完成但未输出回答（可能输出超限），请重试或关闭思考模式'
-                : 'AI 流式响应为空，请稍后重试');
+            throw new Error('AI 流式响应为空，请稍后重试');
         }
-        return fullText;
+        return { text: fullText, finishReason };
     }
 
     addMessage(message) {
@@ -1137,15 +1173,10 @@ class AIChatWidget {
         this.messages = this.messages.filter(m => m && m.role &&
             ['user', 'assistant', 'system'].includes(m.role) &&
             (m.content || m.image))
-            .map(m => {
-                const item = {
-                    role: m.role === 'ai' ? 'assistant' : m.role,
-                    content: typeof m.content === 'string' ? m.content : ''
-                };
-                // 保留思考内容：SiliconFlow 思考模式要求下一轮请求原样回传 reasoning_content
-                if (m.reasoningContent) item.reasoningContent = m.reasoningContent;
-                return item;
-            });
+            .map(m => ({
+                role: m.role === 'ai' ? 'assistant' : m.role,
+                content: typeof m.content === 'string' ? m.content : ''
+            }));
     }
 
     getCurrentTime() {

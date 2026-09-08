@@ -36,3 +36,5 @@ Thumbs.db
 .dev.vars.example
 # 本地 Agent 配置
 .agents/
+# AI 识图调试工具运行缓存（.dsh 工具生成，非项目文件）
+.dsh-vision-toolkit/

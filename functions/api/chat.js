@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════════
 
 // 知识库 RAG 检索（共享模块，三通道行为一致）
-import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval } from '../../shared/kb-retrieval.js';
+import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval, trimMessagesToBudget } from '../../shared/kb-retrieval.js';
 
 // 知识库：运行时读取同源静态资源 Markdown/kb.md
 // （Pages Functions 打包器不支持 .md 导入，故随站点发布后 fetch 读取）
@@ -27,10 +27,10 @@ async function loadKnowledgeBase(request) {
   return '';
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders }
   });
 }
 
@@ -172,10 +172,18 @@ export async function onRequestPost(context) {
     const finalModel = kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B';
     console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'})`);
 
+    // ═══ 超窗降级兜底：system+知识库注入+历史 估算超出预算时从最旧历史丢弃（保留 system 与最新提问），
+    // 避免上下文超窗被 SiliconFlow 400 拒绝。前端已有第一道裁剪，这里兜住旧缓存前端等异常体积请求 ═══
+    const PROMPT_TOKEN_BUDGET = 26000; // 32K 窗口 − 输出 max_tokens 上限 − 安全余量
+    const trimmedMessages = trimMessagesToBudget(messages, PROMPT_TOKEN_BUDGET);
+    if (trimmedMessages.length < messages.length) {
+      console.log(`[Context] 超窗降级：${messages.length} → ${trimmedMessages.length} 条`);
+    }
+
     const isStream = stream === true;
     const requestBody = {
       model: finalModel,
-      messages,
+      messages: trimmedMessages,
       stream: isStream,
       max_tokens: max_tokens || 800,
       temperature: (typeof temperature === 'number') ? temperature : 0.5,
@@ -210,7 +218,10 @@ export async function onRequestPost(context) {
         headers: {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache',
-          'X-Accel-Buffering': 'no'
+          'X-Accel-Buffering': 'no',
+          // 回传实际使用的模型：供前端「自动续写」请求显式回传同一模型，
+          // 避免 RAG 未命中切到 GENERAL_MODEL(8B) 后，续写回落前端默认模型导致首尾不一致
+          'X-AI-Model': finalModel
         }
       });
     }
@@ -235,7 +246,7 @@ export async function onRequestPost(context) {
           }
           throw new Error(`SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`);
         }
-        return json(JSON.parse(responseText));
+        return json(JSON.parse(responseText), 200, { 'X-AI-Model': finalModel });
       } catch (error) {
         lastError = error;
         if (attempt < maxRetries) {

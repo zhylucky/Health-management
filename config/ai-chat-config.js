@@ -17,16 +17,19 @@ const AI_CHAT_CONFIG = {
     ocrModel: 'deepseek-ai/DeepSeek-OCR',
     // 流式输出：逐字显示（打字机效果），显著改善响应感知速度
     stream: true,
-    // 思考模式：true 时像 DeepSeek 网页一样先流式显示思考内容，再输出正式回答
-    // 注意：开启思考模式会显著增加响应时间（思考也消耗 token 与时间），嫌慢可改 false
-    thinkingMode: false,
     // 最短缓冲时间（ms）：即使模型立刻返回，也先保持"Thinking…"流光播满此时间再输出，
     // 营造"AI 在思考"的感知。模型实际响应慢于此时长则不受影响，到即出。
     // 设为 0 可关闭此效果。
     minBufferTime: 1800,
     
     // 聊天配置
-    maxMessages: 6, // 上下文裁剪到最近 6 条，控制 prompt 体积以提速
+    maxMessages: 24, // 上下文保留最近 24 条（约 12 轮），多轮追问不丢前文
+    // 超窗自动降级保护：条数多不等于体积可控（用户可能粘贴长报告），
+    // 历史消息按估算 token 预算裁剪——从最旧的开始丢弃，始终保留最新提问，
+    // 为后端知识库注入与模型输出预留空间，避免上下文超窗被 API 拒绝（400）
+    contextBudget: {
+        historyTokenBudget: 12000 // 历史消息 token 预算（中文按 1 字≈1 token 粗估）
+    },
     // 动态回答策略配置（参考 NoteGen 的智能路由）
     strategySettings: {
         enabled: true,

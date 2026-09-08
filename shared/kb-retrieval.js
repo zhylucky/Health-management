@@ -296,6 +296,34 @@ function buildKnowledgeInjection(messages, kbText, cfg) {
   };
 }
 
+// ═══ 上下文窗口保护：token 估算 + 超窗降级裁剪 ═══
+// 粗估规则（无分词器）：CJK 字符约 1 字 = 1 token，其余约 4 字符 = 1 token。
+// 只用于"是否可能超窗"的安全判断，不追求精确。
+const CJK_TOKEN_RE = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
+function estimateTokens(text) {
+  if (!text) return 0;
+  const s = String(text);
+  const cjk = (s.match(CJK_TOKEN_RE) || []).length;
+  return cjk + Math.ceil((s.length - cjk) / 4);
+}
+
+// 超窗降级裁剪：估算总 token 超过预算时，从最旧的非 system 消息开始丢弃，
+// 始终保留 system（含知识库注入）与最新一条消息（当前提问），保证请求不因
+// 上下文超窗被上游 400 拒绝。仅剩 system + 最后一条仍超预算时不再处理
+// （那是当前问题本身超长，交给上游判断，避免把问题裁没）。
+function trimMessagesToBudget(messages, budgetTokens) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const est = (list) => list.reduce(
+    (sum, m) => sum + estimateTokens(typeof m.content === 'string' ? m.content : '') + 4, 0);
+  const out = messages.slice();
+  while (out.length > 1 && est(out) > budgetTokens) {
+    const idx = out.findIndex(m => m.role !== 'system');
+    if (idx === -1 || idx === out.length - 1) break;
+    out.splice(idx, 1);
+  }
+  return out;
+}
+
 // 逐项导出：兼容 Node 原生 ESM 具名导入（cjs-module-lexer）、esbuild 打包器、CommonJS require
 exports.KB_CONFIG_DEFAULTS = KB_CONFIG_DEFAULTS;
 exports.GENERAL_SYSTEM_PROMPT = GENERAL_SYSTEM_PROMPT;
@@ -307,3 +335,5 @@ exports.retrieve = retrieve;
 exports.buildInjection = buildInjection;
 exports.shouldSkipRetrieval = shouldSkipRetrieval;
 exports.buildKnowledgeInjection = buildKnowledgeInjection;
+exports.estimateTokens = estimateTokens;
+exports.trimMessagesToBudget = trimMessagesToBudget;
