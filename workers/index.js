@@ -18,6 +18,8 @@ function buildCorsHeaders(request) {
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Max-Age': '86400',
+    // 允许 JS 读取 X-AI-Model（前端续写需回传实际模型）
+    'Access-Control-Expose-Headers': 'X-AI-Model',
     'Vary': 'Origin'
   };
   if (ALLOWED_ORIGINS.includes(origin)) {
@@ -28,7 +30,7 @@ function buildCorsHeaders(request) {
 
 // ═══ 知识库（内嵌，避免 Workers 无法读取文件系统） ═══
 import KNOWLEDGE_BASE from '../Markdown/kb.md';
-import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval } from '../shared/kb-retrieval.js';
+import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval, trimMessagesToBudget } from '../shared/kb-retrieval.js';
 
 // ═══ 图片消息处理：识图理解 / OCR 提取 ═══
 async function handleImage(request, env, body) {
@@ -190,10 +192,17 @@ async function handleChat(request, env) {
     const finalModel = kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B';
     console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'})`);
 
+    // ═══ 超窗降级兜底：估算超出预算时从最旧历史丢弃（保留 system 与最新提问），避免上游 400 ═══
+    const PROMPT_TOKEN_BUDGET = 26000; // 32K 窗口 − 输出 max_tokens 上限 − 安全余量
+    const trimmedMessages = trimMessagesToBudget(messages, PROMPT_TOKEN_BUDGET);
+    if (trimmedMessages.length < messages.length) {
+      console.log(`[Context] 超窗降级：${messages.length} → ${trimmedMessages.length} 条`);
+    }
+
     const isStream = stream === true;
     const requestBody = {
       model: finalModel,
-      messages,
+      messages: trimmedMessages,
       stream: isStream,
       // 默认 800（原 1500）：降低生成总量，显著缩短非流式等待时间
       max_tokens: max_tokens || 800,
@@ -231,6 +240,9 @@ async function handleChat(request, env) {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache',
           'X-Accel-Buffering': 'no',
+          // 回传实际使用的模型：供前端「自动续写」请求显式回传同一模型，
+          // 避免 RAG 未命中切到 GENERAL_MODEL(8B) 后续写回落前端默认模型导致首尾不一致
+          'X-AI-Model': finalModel,
           ...corsHeaders
         }
       });
@@ -263,7 +275,7 @@ async function handleChat(request, env) {
         const data = JSON.parse(responseText);
         return new Response(JSON.stringify(data), {
           status: 200,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          headers: { 'Content-Type': 'application/json', 'X-AI-Model': finalModel, ...corsHeaders }
         });
       } catch (error) {
         lastError = error;
