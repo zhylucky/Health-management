@@ -5,7 +5,7 @@
 // 依赖：Pages 项目环境变量 SILICONFLOW_API_KEY（wrangler pages secret put）
 // ═══════════════════════════════════════════════
 
-// 知识库 RAG 检索（共享模块，三通道行为一致）
+// 知识库 RAG 检索（共享模块，与 Worker 通道行为一致）
 import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval, trimMessagesToBudget } from '../../shared/kb-retrieval.js';
 
 // 知识库：运行时读取同源静态资源 Markdown/kb.md

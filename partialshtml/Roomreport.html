@@ -1643,7 +1643,7 @@ AI: ${reportData.aiReportData.filter(i => parseFloat(i.score) <= 3).slice(0,3).m
             // 同域 Pages Function 直接请求（本地 dev 时走完整路径）
             let functionUrl = config.functionUrl;
             if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                functionUrl = `http://localhost:8888${functionUrl}`;
+                functionUrl = `http://localhost:8788${functionUrl}`;
             }
 
             console.log('AI API 调用 URL:', functionUrl);
@@ -1692,7 +1692,7 @@ AI: ${reportData.aiReportData.filter(i => parseFloat(i.score) <= 3).slice(0,3).m
                         
                         // 特殊处理 504 超时错误
                         if (response.status === 504 || response.status === 503) {
-                            console.error('AI 服务网关超时，可能是 Netlify Function 或上游 API 问题');
+                            console.error('AI 服务网关超时，可能是网关函数或上游 API 问题');
                             throw new Error('AI 服务响应超时，请稍后重试');
                         }
                         

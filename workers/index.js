@@ -1,13 +1,13 @@
 // Cloudflare Worker: AI Chat + CORS Proxy
-// 合并原 netlify/functions/chat.js 和 proxy.js
+// 备用 API 通道（主通道为 Pages Functions，见 functions/api/）
 // v2: 支持流式输出(SSE)、免费多模态识图(Qwen3.5-4B)、OCR 提取(DeepSeek-OCR)、参数透传
 
 const ALLOWED_ORIGINS = [
-  'https://jkkeji.netlify.app',
+  'https://health.bbroot.com',
   'https://jkkeji.pages.dev',
   'https://jkkeji-api.health-management.workers.dev',
-  'http://localhost:8888',
-  'http://127.0.0.1:8888',
+  'http://localhost:8788',
+  'http://127.0.0.1:8788',
   'http://localhost:8080',
   'http://127.0.0.1:8080'
 ];

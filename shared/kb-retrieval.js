@@ -2,7 +2,7 @@
 // shared/kb-retrieval.js — 知识库检索共享模块（零依赖纯函数）
 // 用途：把《kb.md》按标题切块，根据用户问题打分检索 top-K，
 //       生成带【来源】标注的注入段，供 AI 助手使用。
-// 被三处函数通道共用（Pages Functions / Worker / Netlify Functions），
+// 被两处函数通道共用（Pages Functions / Worker），
 // 用 CommonJS 写法保证 require 与 import 两种加载形态都兼容。
 // 注意：本文件不可引入任何 Node 内置模块或第三方包（Worker 环境限制）。
 // ═══════════════════════════════════════════════════════════════════

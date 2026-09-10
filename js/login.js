@@ -4,9 +4,6 @@ const CONFIG = {
     SUPABASE_URL: 'https://gxohpxiekmpsmkzkcxfc.supabase.co',
     SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4b2hweGlla21wc21remtjeGZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk3MTg0NDQsImV4cCI6MjA2NTI5NDQ0NH0.sUleRxPQsEMxNqGPWUfZBDbjvDR5huZ7hGQkrHoahqk',
 
-    // API 配置
-    API_BASE_URL: '/.netlify/functions',
-
     // 邮箱正则
     EMAIL_REGEX: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
 

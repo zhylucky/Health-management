@@ -816,7 +816,7 @@
             // 定义请求方法
             const fetchMethods = [
                 {
-                    name: isLocalDev ? '本地代理' : 'Netlify Function代理',
+                    name: isLocalDev ? '本地代理' : '同域代理',
                     fetch: async () => {
                         const targetURL = directBaseURL + selectedAppId;
                         const proxyURL = proxyBase + encodeURIComponent(targetURL);
