@@ -10,7 +10,7 @@
 const KB_CONFIG_DEFAULTS = {
   topK: 4,            // 注入片段数
   minScore: 0.18,     // 注入阈值（queryCoverage 主导，按真实用例实测调优）
-  maxChunkChars: 1500 // 大块保护：块正文超过该长度时二次切分
+  maxChunkChars: 1500 // 大块保护：块正文超过该长度时二次切分（整表作答的块见 NO_SPLIT_TITLES）
 };
 
 // 通用模式系统提示词：RAG 未命中知识库（用户问业务之外的问题）时替换使用。
@@ -56,6 +56,53 @@ const CHITCHAT_WORDS = [
 const PRODUCT_INTRO_PATTERNS = [
   '有什么产品','有哪些产品','什么产品','产品有哪些','产品有什么',
   '产品介绍','介绍产品','产品都有','有哪几款','有几种产品','产品线','几款产品'
+];
+
+// ═══ 离线编译的意图→章节路由表 ═══
+// 词元覆盖率打分处理不了同义/口语映射（"能用多久"≠字面有"寿命"），实测会漏检。
+// 本表把人工确认过的"问法 → 该去哪一节找"预编译下来，在打分时给目标小节加权。
+// 知识库增删章节后需同步维护本表（每段 hint 说明该行覆盖什么问法）。
+// 采用**软加权**而非硬过滤：底层仍是全局打分，路由只把正确小节往上顶，
+// 即使路由判断错了也不会丢召回。
+const KB_ROUTES = [
+  { hint: '续航与充电',     q: /续航|充电|充满|电池|电量|能连续用|连续工作/,              targets: ['> 3.1', '> C.'],   boost: 0.45 },
+  { hint: '主机硬件规格',   q: /重量|多重|几克|尺寸|多大|防水|防护等级|供电|功率|IPX/,     targets: ['> 3.1'],           boost: 0.50 },
+  { hint: '性能指标与精度', q: /测量范围|精度|误差|分辨率|量程|采样|bpm|rpm/,              targets: ['> 3.2'],           boost: 0.50 },
+  { hint: '预期使用寿命',   q: /能用多久|可以用多久|使用寿命|使用年限|寿命|报废/,          targets: ['> 16.6'],          boost: 0.55 },
+  { hint: '常见故障排除',   q: /故障|排除|测不出|读不出|没数据|没读数|直线|杂乱|不好使|不工作/, targets: ['> 16.8'],      boost: 0.50 },
+  { hint: '促醒报警阈值',   q: /报警|预警|阈值|上限|下限|超限/,                            targets: ['> 10.3'],          boost: 0.50 },
+  { hint: '保修与售后',     q: /保修|质保|三包|维修|换新|退货|售后|坏了/,                  targets: ['> 16.7'],          boost: 0.45 },
+  { hint: '环境与储运',     q: /环境温度|工作温度|湿度|气压|海拔|运输|贮存/,               targets: ['> 16.4'],          boost: 0.45 },
+  { hint: '禁忌与适用人群', q: /禁忌|禁用|慎用|儿童|婴儿|起搏器|不适合|谁不能用/,          targets: ['> 4.1', '> D.'],   boost: 0.40 },
+  // 「诊断」单独入词：只写「能做诊断|诊断吗」时，"能用来诊断疾病吗"这类自然说法会全部落空
+  { hint: '合规与免责',     q: /免责|诊断|确诊|治病|有病|患病|(指标|数据|结果|报告|读数|数值|心率|血氧|血压|体温|呼吸)[^。？！?!]{0,8}正常/, targets: ['> 16.3'], boost: 0.50 },
+  { hint: '标准与认证',     q: /EMC|电磁兼容|GB ?\d|YY ?\d|注册证|认证|符合.*标准/,        targets: ['十五、'],          boost: 0.40 },
+  { hint: '软件别名对照',   q: /叫什么|哪个 ?(app|软件)|软件名|包名|别名/,                 targets: ['> 2.2'],           boost: 0.45 },
+  { hint: '术语解释',       q: /是什么意思|什么意思|术语|什么叫|何为/,                      targets: ['> 2.3'],           boost: 0.45 },
+  { hint: '公司与地址',     q: /公司|厂家|厂商|注册人|生产企业|地址|品牌|官网/,            targets: ['一、公司概况'],    boost: 0.40 },
+  { hint: '后台账号与权限', q: /后台|账号|账户|密码|登录|权限|角色|管理员/,                targets: ['十三、'],          boost: 0.35 },
+  { hint: '下载与版本',     q: /下载|二维码|最新版|版本号|升级/,                            targets: ['> F.'],            boost: 0.40 }
+];
+
+/** 命中则累加路由加权：同一路由的多个目标小节各加一次 */
+function routeBoost(query, title) {
+  let boost = 0;
+  for (const r of KB_ROUTES) {
+    if (!r.q.test(query)) continue;
+    for (const t of r.targets) if (title.includes(t)) boost += r.boost;
+  }
+  return boost;
+}
+
+// 目录型表格白名单：整张表构成一个完整答案（产品清单、软件别名、术语表），
+// 一旦被 maxChunkChars 切断，被切掉的行将永远无法被召回（实测产品清单只能列出 11 个中的 7 个）。
+const NO_SPLIT_TITLES = [
+  // 公司概况正文 1561 字符,刚好越过 maxChunkChars 被切成 1475+86 两块(尾巴只含"共同技术底座"一句),
+  // 两片标题完全相同,命中时会一起占掉 2 个 top-K 名额(实测「公司附近有门店吗」两片同时注入)
+  '一、公司概况',
+  '2.1 产品清单', '2.2 产品—软件—应用名称对照表', '2.3 术语表',
+  // EMC 表同理：被切成两块后两片标题相同，会一起挤掉 FAQ E 的要点汇总
+  '15.3 电磁兼容（EMC）'
 ];
 
 /**
@@ -164,7 +211,15 @@ function buildChunks(markdown) {
     }
     return out;
   };
-  for (const c of chunks) result.push(...splitOverlong(c));
+  for (const c of chunks) {
+    // 「文件说明」块 = 首个标题前的文件头(H1 + 版本/用途/资料来源/给 AI 的检索约定),
+    // 属内部整理说明而非答案内容。实测「这个产品好用吗?」会把它检索出来,把
+    // "面向 AI 问答……整体注入型知识库""14 份原始文档"等元信息喂给模型,故不参与检索。
+    if (c.title === '文件说明') continue;
+    // 目录型表格整张就是答案，切断后后半部分再也不会被召回（实测产品清单只能列出 11 个中的 7 个）
+    if (NO_SPLIT_TITLES.some(t => c.title.includes(t))) result.push(c);
+    else result.push(...splitOverlong(c));
+  }
   return result;
 }
 
@@ -202,10 +257,25 @@ function scoreChunk(query, chunk) {
     const titleHits = tokenOverlap(qt, tt);
     if (titleHits > 0) score += 0.25 * (titleHits / qt.size);
   }
+  // 意图路由加权：弥补词元打分无法处理的同义/口语映射（见 KB_ROUTES 注释）
+  score += routeBoost(query, chunk.title);
   return score;
 }
 
-/** 检索：对全部块打分，取 top-K 且分数 ≥ minScore */
+// ═══ 免责声明常驻 ═══
+// 16.3 是知识库里唯一的法定免责条款，体积极小（约 80 token）。此前靠检索命中，
+// 触发词覆盖不全时会被漏掉——实测问「能用来诊断疾病吗」注入里没有 16.3，
+// 而 4.1 的「为……诊断提供依据」会把模型往"可用于诊断"的方向带，属方向性错误答复。
+// 改为无条件追加到每个注入段末尾；已检索到时不重复。
+const DISCLAIMER_TITLE_RE = /16\.3.*免责/;
+function buildDisclaimer(chunks, hits) {
+  const already = hits.some(h => h.chunk.title.includes('16.3'));
+  if (already) return '';
+  const c = chunks.find(x => DISCLAIMER_TITLE_RE.test(x.title));
+  return c ? `【来源：${c.title}】\n${c.text.trim()}\n` : '';
+}
+
+/** 检索：对全部块打分取 top-K，分数 ≥ minScore */
 function retrieve(query, chunks, cfg) {
   const c = cfg || KB_CONFIG_DEFAULTS;
   if (!query || !chunks || chunks.length === 0) return [];
@@ -223,19 +293,23 @@ function retrieve(query, chunks, cfg) {
     .filter(s => s.score >= c.minScore);
 }
 
-/** 生成注入段（带【来源】标注 + 使用说明）；hits 为空时返回空串 */
-function buildInjection(hits) {
+/** 生成注入段（带【来源】标注 + 使用说明 + 常驻免责声明）；hits 为空时返回空串 */
+function buildInjection(hits, disclaimer) {
   if (!hits || hits.length === 0) return '';
   const parts = hits.map(({ chunk }) =>
     `【来源：${chunk.title}】\n${chunk.text.trim()}\n`
   );
+  if (disclaimer) parts.push(disclaimer);
   return (
     '\n\n--- 产品知识库（检索自《kb.md》）---\n\n' +
     parts.join('\n') +
     '\n--- 使用说明 ---\n' +
     '1. 仅当问题涉及公司/产品/设备/操作/后台/小程序等业务范畴时，优先依据上方片段回答；\n' +
     '2. 片段未覆盖的内容，请如实说明"知识库中暂无相关信息"并建议联系客服，不得编造型号、参数或操作步骤；\n' +
-    '3. 与业务无关的问题（闲聊、通用知识）按常识回答，不要提及知识库。'
+    '3. 涉及医疗建议时（能否诊断、是否患病、指标是否正常、能否停用/改用药物、特殊人群能否使用等），必须同时说明"本产品对诊断只起辅助作用，最终须由医生结合临床表现判断"；\n' +
+    '4. 知识库未提及的信息（如某类人群是否可用、价格与报价等），如实说明暂无相关信息并建议联系客服。不得因"禁忌清单中未列入"反向推断为可用，也不得估算或推测价格；\n' +
+    '5. 人数、时长、报警阈值等按产品区分的参数，先确认用户所指的产品；无法确认时应列出各产品取值并说明差异，不要混为一谈；\n' +
+    '6. 与业务无关的问题（闲聊、通用知识）按常识回答，不要提及知识库。'
   );
 }
 
@@ -252,7 +326,9 @@ function matchProductIntro(query, chunks) {
   const isIntroQuestion = PRODUCT_INTRO_PATTERNS.some(p => q.includes(p)) ||
     (q.includes('产品') && ['有什么', '有哪些', '介绍', '是什么'].some(w => q.includes(w)));
   if (!isIntroQuestion) return null;
-  const overview = chunks.find(c => c.title === '二、产品体系总览');
+  // 前缀匹配：v2.1 起「## 二、产品体系总览」正文为空、标题下紧跟「### 2.1 产品清单」，
+  // 不存在裸的「二、产品体系总览」块，精确匹配会取不到而兜底失效。
+  const overview = chunks.find(c => c.title.indexOf('二、产品体系总览') === 0);
   return overview ? [{ chunk: overview, score: 1 }] : null;
 }
 
@@ -290,8 +366,13 @@ function buildKnowledgeInjection(messages, kbText, cfg) {
     const seen = new Set(introHit.map(h => h.chunk.title));
     hits = [...introHit, ...hits.filter(h => !seen.has(h.chunk.title))].slice(0, c.topK);
   }
+  // 免责块单独命中不算命中:16.3 正文极短,短查询仅凭 Dice 项就能把它顶过阈值;
+  // 若按"命中"处理,门控(hits.length > 0)会把通用问题误切到知识库模式——换 4B 模型
+  // 且使用说明 2 要求答"知识库中暂无相关信息",而注入里没有任何可答内容。
+  // 实测「设备屏幕不亮正常吗?」即为此情形;现按未命中处理,交回通用模式回答。
+  if (hits.length > 0 && hits.every(h => DISCLAIMER_TITLE_RE.test(h.chunk.title))) hits = [];
   return {
-    injection: buildInjection(hits),
+    injection: buildInjection(hits, buildDisclaimer(chunks, hits)),
     hits: hits.map(h => ({ title: h.chunk.title, score: h.score }))
   };
 }
@@ -326,6 +407,10 @@ function trimMessagesToBudget(messages, budgetTokens) {
 
 // 逐项导出：兼容 Node 原生 ESM 具名导入（cjs-module-lexer）、esbuild 打包器、CommonJS require
 exports.KB_CONFIG_DEFAULTS = KB_CONFIG_DEFAULTS;
+// 以下两项导出仅供自检脚本断言"硬编码章节目标是否仍存在于 kb.md":
+// 知识库改标题时路由/白名单会静默失效(不报错、只是检索变差),需要可断言的出口。
+exports.KB_ROUTES = KB_ROUTES;
+exports.NO_SPLIT_TITLES = NO_SPLIT_TITLES;
 exports.GENERAL_SYSTEM_PROMPT = GENERAL_SYSTEM_PROMPT;
 exports.CHITCHAT_WORDS = CHITCHAT_WORDS;
 exports.tokenize = tokenize;
