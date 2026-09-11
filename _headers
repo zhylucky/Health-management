@@ -1,6 +1,6 @@
 # ═══ Cloudflare Pages 响应头与缓存策略 ═══
-# 说明: 项目为无构建静态站点、无指纹文件名，故 HTML 不缓存、JS/CSS 短期缓存，
-#       确保发版后用户能及时拿到新资源；图片固定文件名，长缓存需配合 ?v= 或改名。
+# 说明: 项目为无构建静态站点、无指纹文件名，故 HTML / JS / CSS 一律不缓存
+#       （改后立即生效，无需维护 ?v= 版本号）；图片固定文件名，长缓存需配合 ?v= 或改名。
 
 # ── 全站安全头 ──
 /*
@@ -13,11 +13,15 @@
 /*.html
   Cache-Control: public, max-age=0, must-revalidate
 
-# ── JS/CSS: 短期缓存 1 天；config 不缓存（AI 模型配置常改，需即时生效） ──
+# ── JS: 不缓存（无指纹文件名，改后立即生效，无需 ?v=） ──
 /js/*
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=0, must-revalidate
+
+# ── CSS: 不缓存（同 HTML/JS，无指纹文件名，改后立即生效） ──
 /css/*
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=0, must-revalidate
+
+# ── config: 不缓存（AI 模型配置常改，需即时生效） ──
 /config/*
   Cache-Control: public, max-age=0, must-revalidate
 
