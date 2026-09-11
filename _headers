@@ -3,11 +3,18 @@
 #       （改后立即生效，无需维护 ?v= 版本号）；图片固定文件名，长缓存需配合 ?v= 或改名。
 
 # ── 全站安全头 ──
+# CSP 只上「不与内联脚本冲突」的子集：object-src / base-uri / frame-ancestors 都不限制
+# 现有脚本执行，故零风险。**不能**加 script-src 'self' —— 全站依赖内联 <script> 块与
+# onclick= 等内联处理器（index.html、health-management.html、QRcode.html、partialshtml/*），
+# 且脚本还来自 echarts / supabase / xlsx 的多个 CDN，加了会直接打爆页面交互。
+# 要上完整 CSP 须先做内联脚本 nonce/hash 迁移 + CDN 白名单，属独立工程。
+# frame-ancestors 与 X-Frame-Options 同义，后者保留用于兼容旧浏览器。
 /*
   X-Content-Type-Options: nosniff
   X-Frame-Options: SAMEORIGIN
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Content-Security-Policy: object-src 'none'; base-uri 'self'; frame-ancestors 'self'
 
 # ── HTML: 不缓存，始终回源校验 ──
 /*.html

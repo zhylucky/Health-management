@@ -8,15 +8,18 @@ const AI_CHAT_CONFIG = {
     // 通过 Pages Functions 同域代理调用（/api/chat → SiliconFlow），避免 workers.dev 跨境不稳定
     // 备用（Worker 直连）：'https://jkkeji-api.health-management.workers.dev/chat'
     functionUrl: '/api/chat',
-    // 对话模型（免费）：Qwen3.5-4B 更快 + 原生多模态；Qwen3-8B 质量更好但免费档生成慢
-    // 2026-08-19 已从 Qwen3-8B 切换为 Qwen3.5-4B 提速
-    // ⚠️ 此字段几乎不生效：后端只要 injectKnowledge=true（正常对话都是），就会用
-    //    KB_MODEL / GENERAL_MODEL 覆盖它。改这里不会改变实际使用的模型——
-    //    要换模型请改 Cloudflare 环境变量 KB_MODEL / GENERAL_MODEL（见 README）。
+    // ⚠️ 本文件里的三个模型字段（model / imageModel / ocrModel）**都不生效**——
+    //    真实模型一律由 Cloudflare 环境变量决定（见 README 环境变量表）：
+    //      · model      —— 后端只要 injectKnowledge=true（正常对话都是），就会用
+    //                      KB_MODEL / GENERAL_MODEL 覆盖它；
+    //      · imageModel —— 前端会把它当 model 字段发出去（js/ai-chat.js 请求体构造处），
+    //                      但后端 handleImage 只读 env.IMAGE_MODEL，传进来的 model 整个被忽略；
+    //      · ocrModel   —— 前端从不发送该字段，后端也只读 env.OCR_MODEL。
+    //    改这三个字段不会改变实际使用的模型，要换模型请改环境变量。
     model: 'Qwen/Qwen3.5-4B',
-    // 识图模型（免费，原生多模态，看图理解+问答，替代付费的 VL 模型）
+    // 识图模型（免费，原生多模态，看图理解+问答，替代付费的 VL 模型）—— 不生效，见上方说明
     imageModel: 'Qwen/Qwen3.5-4B',
-    // OCR 模型（免费，图片/文档/截图 → 文字/markdown 提取）
+    // OCR 模型（免费，图片/文档/截图 → 文字/markdown 提取）—— 不生效，见上方说明
     ocrModel: 'deepseek-ai/DeepSeek-OCR',
     // 流式输出：逐字显示（打字机效果），显著改善响应感知速度
     stream: true,

@@ -12,7 +12,7 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
   - OCR 文字提取：`deepseek-ai/DeepSeek-OCR`
   - 知识库检索：本地 RAG（`shared/kb-retrieval.js`），零依赖、按标题切块 + bigram 打分
 - **后端认证**：Supabase（浏览器 CDN 直连 + anon key）
-- **部署**：Cloudflare Pages（主，含 Functions）+ Cloudflare Worker（备用 API 通道）
+- **部署**：Cloudflare Pages（主，含 Functions）。Cloudflare Worker 备用通道（`workers/index.js`）**从未部署、也不在任何 npm 脚本里**，需手动 `npx wrangler deploy` 才会启用
 
 ## 在线域名
 
@@ -20,7 +20,7 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 |------|------|
 | `health.bbroot.com` | 正式对外域名 |
 | `jkkeji.pages.dev` | Pages 站点域名（Pages 项目名为 `health-management`） |
-| `jkkeji-api.health-management.workers.dev` | Worker 备用 API 通道（`/chat`、`/proxy`） |
+| `jkkeji-api.health-management.workers.dev` | Worker 备用 API 通道（`/chat`、`/proxy`）—— **从未部署**，该域名当前不存在 |
 
 ## 项目结构
 
@@ -92,6 +92,7 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 
 | 约束 | 值 | 说明 |
 |------|-----|------|
+| `MAX_BODY_BYTES` | 8MB + 64KB | 在 `request.json()` **之前**按 `content-length` 拦截，超限直接 413。解析后才校验等于已经烧掉解析成本（直连攻击者可塞接近 CF 100MB 上限的垃圾 JSON）。chunked 请求无该头，退化为解析后校验 |
 | `MAX_MESSAGES` | 60 | 前端只发 ≤24 条（`config.maxMessages`），留 2.5 倍余量；超出返回 400。**校验必须先于图片分支**，否则识图请求会绕过它 |
 | `MAX_IMAGE_CHARS` | 8M 字符 | 约 6MB 图片（base64 膨胀 ~1.33x）；超出返回 413 |
 | `IMAGE_HISTORY_LIMIT` | 6 | 识图（understand）拼入的历史条数上限；**OCR 模式不带历史** |
@@ -101,7 +102,7 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 | `trimMessagesToBudget` | O(n) | 曾为 O(n²)：8000 条消息耗 55 秒 CPU，可被用来打满 Functions 限额 |
 
 - **`formatContent`（`js/ai-chat.js`）必须转义引号并做 URL 协议白名单**：链接的 URL 会拼进 `href` 属性且输出走 `innerHTML`，只转义 `& < >` 时 `[x](" onmouseover="…")` 可闭合属性注入脚本。白名单里的单斜杠分支要写成 `\/(?!\/)`，否则 `[x](//evil.com)` 这种协议相对 URL 会生成外站跳转链接。改动渲染逻辑后跑 `node scripts/test-ai-hardening.js`。
-- **`workers/index.js` 从未部署**，与 `functions/api/chat.js` 是重复实现（历史已漂移过）。改 chat 链路**两处都要改**；`test-ai-hardening.js` 有一项断言专门比对两边的关键常量，能挡住只改一处的疏漏。若不需要备用通道建议直接删除。
+- **`workers/index.js` 从未部署**，与 `functions/api/chat.js` 是重复实现（历史已漂移过）。改 chat 链路**两处都要改**；`test-ai-hardening.js` 有一项断言专门比对两边的关键常量，能挡住只改一处的疏漏。**`deploy:worker` / `deploy:all` 脚本已刻意删除**：曾存在误跑 `npm run deploy:all` 把这份从未部署的重复实现推上线的风险（`wrangler.jsonc` 里还列着 `SUPABASE_SERVICE_KEY`，一旦顺手配上就是绕过 RLS 的权限暴露）。要启用备用通道请手动 `npx wrangler deploy`；若确定不需要，建议直接删除 `workers/` 与 `wrangler.jsonc` 的 Worker 配置。
 - **限流/人机校验不在代码层**：需在 Cloudflare 侧配置（WAF Rate Limiting 或 Turnstile），否则端点可被匿名滥用、烧掉 SiliconFlow 免费额度。
 
 ## 知识库（RAG）
@@ -128,8 +129,10 @@ node scripts/kb-selftest.js   # 22 题自测，任一路由目标解析为 0 块
 改动 AI 链路（`js/ai-chat.js` 渲染、`shared/kb-retrieval.js` 裁剪、`functions/api/chat.js`）后重跑：
 
 ```bash
-node scripts/test-ai-hardening.js   # 35 项：XSS 拦截 / 裁剪等价性与复杂度 / 请求上限 / 识图历史与文本预算 / 重试策略 / 两后端常量一致
+node scripts/test-ai-hardening.js   # 37 项：XSS 拦截 / 裁剪等价性与复杂度 / 请求上限（含解析前体积拦截）/ 识图历史与文本预算 / 重试策略 / 两后端常量一致
 ```
+
+或直接 `npm test`（= 上条 + `test-context-budget.js`，两条一起跑）。
 
 ## 本地开发
 
@@ -138,6 +141,9 @@ npm install
 
 # 主方式：Cloudflare Pages 本地开发（含 Functions，读取 .dev.vars）
 npm run dev              # → http://localhost:8788
+
+# AI 链路回归（37 项加固 + 上下文预算）
+npm test
 
 # 备用 API 通道（Worker）
 npm run cf:dev           # → wrangler dev
@@ -175,14 +181,21 @@ npx wrangler pages secret put SILICONFLOW_API_KEY --project-name=health-manageme
 # Cloudflare Pages（主，含 Functions）
 npm run deploy:pages     # npx wrangler pages deploy . --project-name=health-management --branch=main
 
-# Cloudflare Worker（备用 API）
-npm run deploy:worker    # npx wrangler deploy
-
-# 同时部署
-npm run deploy:all
+# Cloudflare Worker（备用 API，从未部署）
+# 刻意不提供 npm 脚本，避免误跑；要启用请手动执行：
+npx wrangler deploy
 ```
 
 > `functions/`、`shared/`、`Markdown/kb.md`、`js/vendor/`、`wrangler.jsonc` 等文件必须提交到 Git，否则控制台触发重新部署会丢失 Functions（表现为 `/api/chat` 返回 405）。
+
+## 安全响应头（`_headers`）
+
+全站固定：`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`Referrer-Policy: strict-origin-when-cross-origin`、`Permissions-Policy: camera=(), microphone=(), geolocation=()`。
+
+CSP 只上了**不与内联脚本冲突**的子集：`object-src 'none'; base-uri 'self'; frame-ancestors 'self'`。
+**不能加 `script-src 'self'`** —— 全站依赖内联 `<script>` 块与 `onclick=` 等内联处理器（`index.html`、`health-management.html`、`QRcode.html`、`partialshtml/*`），且脚本来自 echarts / supabase / xlsx 的多个 CDN，加了会直接打爆页面交互。要上完整 CSP 须先做内联脚本 nonce/hash 迁移 + CDN 白名单，属独立工程。
+
+> 因此 `formatContent`（`js/ai-chat.js`）目前仍是 XSS 的**唯一**防线，没有 CSP 第二层兜底——改动渲染逻辑后必须跑 `npm test`。
 
 ## 缓存策略（`_headers`）
 

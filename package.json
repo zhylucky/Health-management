@@ -10,9 +10,8 @@
     "build": "echo 'Static site - no build needed'",
     "start": "npm run dev",
     "cf:dev": "wrangler dev",
-    "deploy:worker": "wrangler deploy",
     "deploy:pages": "wrangler pages deploy . --project-name=health-management --branch=main",
-    "deploy:all": "npm run deploy:worker && npm run deploy:pages"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/test-ai-hardening.js && node scripts/test-context-budget.js"
   },
   "keywords": [
     "health",
@@ -23,7 +22,8 @@
   "author": "健康科技",
   "license": "MIT",
   "devDependencies": {
-    "live-server": "^1.2.2"
+    "live-server": "^1.2.2",
+    "wrangler": "^4.131.0"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.44.4",

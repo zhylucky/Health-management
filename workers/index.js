@@ -43,6 +43,9 @@ import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, sho
 // ═══ 请求上限防护（与 functions/api/chat.js 保持一致，改动需两处同步）═══
 const MAX_MESSAGES = 60;
 const MAX_IMAGE_CHARS = 8 * 1024 * 1024;
+// 解析前体积上限：request.json() 会完整解析整个 body 才轮到图片 413 检查，故先看
+// content-length 把超大请求挡在解析之外（chunked 下该头缺失，退化为解析后校验）。
+const MAX_BODY_BYTES = MAX_IMAGE_CHARS + 64 * 1024;
 
 // ═══ 图片消息处理：识图理解 / OCR 提取 ═══
 async function handleImage(request, env, body) {
@@ -167,6 +170,15 @@ async function handleChat(request, env) {
   const corsHeaders = buildCorsHeaders(request);
 
   try {
+    // ── 解析前体积拦截：必须早于 request.json()（与 Pages 通道同逻辑）──
+    const contentLength = Number(request.headers?.get?.('content-length')) || 0;
+    if (contentLength > MAX_BODY_BYTES) {
+      return new Response(JSON.stringify({ error: `请求体过大（上限约 ${Math.round(MAX_BODY_BYTES / 1048576)}MB）` }), {
+        status: 413,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
     const body = await request.json();
     const { messages, model, image, imageMode, injectKnowledge, stream, temperature, max_tokens } = body;
 

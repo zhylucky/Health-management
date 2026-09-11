@@ -5,7 +5,7 @@
 // 覆盖 2026-09-11 加固的四部分，防止将来被改回去：
 //   1. js/ai-chat.js formatContent 的链接渲染不得产生 HTML 属性注入 / 危险协议 / 外站跳转
 //   2. shared/kb-retrieval.js trimMessagesToBudget 必须 O(n) 且与旧实现语义等价
-//   3. functions/api/chat.js 的请求上限、识图历史、重试策略
+//   3. functions/api/chat.js 的请求上限（含解析前体积拦截）、识图历史、重试策略
 //   4. functions/api/chat.js 与 workers/index.js 的关键常量保持一致（两份重复实现）
 //
 // 用法：node scripts/test-ai-hardening.js     任一项失败即 exit 1
@@ -153,6 +153,27 @@ async function testChatHandler() {
   check('识图 + 61 条 messages → 400（不绕过上限）',
     (await call({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: false, messages: tooMany })).status === 400);
 
+  // 解析前体积拦截：超大 content-length 必须在 request.json() 之前被拒，否则整个 body 已被解析
+  let parsedBigBody = false;
+  const bigBodyReq = {
+    headers: { get: (h) => (String(h).toLowerCase() === 'content-length' ? String(9 * 1024 * 1024) : null) },
+    json: async () => { parsedBigBody = true; return { messages: [{ role: 'user', content: 'x' }] }; },
+    url: 'https://health.bbroot.com/api/chat'
+  };
+  const bigRes = await onRequestPost({ request: bigBodyReq, env });
+  check('超大 content-length → 413 且不解析 body',
+    bigRes.status === 413 && !parsedBigBody, `(状态 ${bigRes.status}, 已解析=${parsedBigBody})`);
+
+  // 边界：恰为上限应放行到解析层（只有「超过」才拒），且无 content-length 的 chunked 请求不受影响
+  let parsedAtLimit = false;
+  const atLimitReq = {
+    headers: { get: (h) => (String(h).toLowerCase() === 'content-length' ? String(8 * 1024 * 1024 + 64 * 1024) : null) },
+    json: async () => { parsedAtLimit = true; return { messages: [{ role: 'user', content: 'hi' }], stream: false }; },
+    url: 'https://health.bbroot.com/api/chat'
+  };
+  check('content-length 恰为上限 → 放行解析',
+    (await onRequestPost({ request: atLimitReq, env })).status === 200 && parsedAtLimit);
+
   // 识图历史
   globalThis.fetch = async (url, opts) => { captured = JSON.parse(opts.body); return okJson(); };
   const msgs = [
@@ -223,7 +244,7 @@ function testBackendParity() {
     const m = src.match(new RegExp('const\\s+' + name + '\\s*=\\s*([^;]+);'));
     return m ? m[1].replace(/\s+/g, '') : null;
   };
-  const names = ['MAX_MESSAGES', 'MAX_IMAGE_CHARS', 'IMAGE_HISTORY_LIMIT', 'IMAGE_HISTORY_MAX_CHARS', 'IMAGE_PROMPT_MAX_CHARS'];
+  const names = ['MAX_MESSAGES', 'MAX_IMAGE_CHARS', 'MAX_BODY_BYTES', 'IMAGE_HISTORY_LIMIT', 'IMAGE_HISTORY_MAX_CHARS', 'IMAGE_PROMPT_MAX_CHARS'];
   const bad = [];
   for (const n of names) {
     const a = grab(pages, n), b = grab(worker, n);

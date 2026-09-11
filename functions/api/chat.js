@@ -21,6 +21,12 @@ let KNOWLEDGE_BASE_CACHE = null;
 const MAX_MESSAGES = 60;
 const MAX_IMAGE_CHARS = 8 * 1024 * 1024;
 
+// 解析前的体积上限：request.json() 会把整个 body 完整解析成对象，之后才轮到图片 413 检查——
+// 直连攻击者可塞入接近 Cloudflare 请求体上限（100MB）的垃圾 JSON，白烧本实例的 CPU/内存。
+// 正常请求最大也就「8M 字符图片 + JSON 信封」，故留 64KB 余量。
+// 注意：content-length 在 chunked 传输下会缺失，此时退化为解析后校验，不是绝对防线。
+const MAX_BODY_BYTES = MAX_IMAGE_CHARS + 64 * 1024;
+
 async function loadKnowledgeBase(request) {
   if (KNOWLEDGE_BASE_CACHE) return KNOWLEDGE_BASE_CACHE;
   try {
@@ -151,6 +157,12 @@ async function handleImage(env, body) {
 export async function onRequestPost(context) {
   const { request, env } = context;
   try {
+    // ── 解析前体积拦截：必须早于 request.json()，否则大 body 已被完整解析 ──
+    const contentLength = Number(request.headers?.get?.('content-length')) || 0;
+    if (contentLength > MAX_BODY_BYTES) {
+      return json({ error: `请求体过大（上限约 ${Math.round(MAX_BODY_BYTES / 1048576)}MB）` }, 413);
+    }
+
     const body = await request.json();
     const { messages, model, image, imageMode, injectKnowledge, stream, temperature, max_tokens } = body;
 
