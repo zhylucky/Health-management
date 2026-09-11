@@ -392,17 +392,28 @@ function estimateTokens(text) {
 // 始终保留 system（含知识库注入）与最新一条消息（当前提问），保证请求不因
 // 上下文超窗被上游 400 拒绝。仅剩 system + 最后一条仍超预算时不再处理
 // （那是当前问题本身超长，交给上游判断，避免把问题裁没）。
+//
+// 实现为**单次前向遍历 O(n)**：原实现每丢一条就重算一遍全量 token（O(n²)），
+// 实测 8000 条消息要 55 秒 CPU——而 /api/chat 是无鉴权端点、后端此前也不限条数，
+// 单条请求即可打满 Functions 的 CPU 限额。改为先算总账、再前向丢弃，语义完全等价。
 function trimMessagesToBudget(messages, budgetTokens) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
-  const est = (list) => list.reduce(
-    (sum, m) => sum + estimateTokens(typeof m.content === 'string' ? m.content : '') + 4, 0);
-  const out = messages.slice();
-  while (out.length > 1 && est(out) > budgetTokens) {
-    const idx = out.findIndex(m => m.role !== 'system');
-    if (idx === -1 || idx === out.length - 1) break;
-    out.splice(idx, 1);
+  const cost = (m) => estimateTokens(typeof m.content === 'string' ? m.content : '') + 4;
+  const costs = messages.map(cost);
+  const total = costs.reduce((sum, c) => sum + c, 0);
+  // 常见路径：未超预算，零拷贝原样返回（调用方不会改写该数组）
+  if (total <= budgetTokens) return messages;
+
+  const n = messages.length;
+  const keep = new Array(n).fill(true);
+  let remaining = total;
+  // i 只走到 n-2：最后一条（当前提问）永不丢弃
+  for (let i = 0; i < n - 1 && remaining > budgetTokens; i++) {
+    if (messages[i].role === 'system') continue;
+    keep[i] = false;
+    remaining -= costs[i];
   }
-  return out;
+  return messages.filter((_, i) => keep[i]);
 }
 
 // 逐项导出：兼容 Node 原生 ESM 具名导入（cjs-module-lexer）、esbuild 打包器、CommonJS require

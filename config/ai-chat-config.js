@@ -10,6 +10,9 @@ const AI_CHAT_CONFIG = {
     functionUrl: '/api/chat',
     // 对话模型（免费）：Qwen3.5-4B 更快 + 原生多模态；Qwen3-8B 质量更好但免费档生成慢
     // 2026-08-19 已从 Qwen3-8B 切换为 Qwen3.5-4B 提速
+    // ⚠️ 此字段几乎不生效：后端只要 injectKnowledge=true（正常对话都是），就会用
+    //    KB_MODEL / GENERAL_MODEL 覆盖它。改这里不会改变实际使用的模型——
+    //    要换模型请改 Cloudflare 环境变量 KB_MODEL / GENERAL_MODEL（见 README）。
     model: 'Qwen/Qwen3.5-4B',
     // 识图模型（免费，原生多模态，看图理解+问答，替代付费的 VL 模型）
     imageModel: 'Qwen/Qwen3.5-4B',

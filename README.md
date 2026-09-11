@@ -62,7 +62,8 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 │   ├── kb-selftest.js         # 22 题知识库自测（含硬编码目标断言）
 │   ├── diag-kb-v2.js          # 切块 / 体积 / 结构假设体检
 │   ├── test-kb-retrieval.js   # 检索层验证（切块统计、命中/不命中用例）
-│   └── test-context-budget.js # 上下文超窗降级裁剪验证
+│   ├── test-context-budget.js # 上下文超窗降级裁剪验证
+│   └── test-ai-hardening.js   # AI 链路加固回归（XSS / 裁剪复杂度 / 请求上限 / 识图预算 / 重试策略 / 两后端常量一致）
 ├── Markdown/kb.md             # 知识库正文（RAG 数据源）
 ├── docs/                      # 自测报告与设计文档
 ├── images/                    # 图片资源
@@ -85,6 +86,24 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
   - 图片灯箱（点击消息内图片放大查看）
   - 意图分类智能策略（temperature/max_tokens 按问题类型调整）
 
+### AI 链路的请求上限与安全约束（改动 `functions/api/chat.js` 前请先读）
+
+`/api/chat` 是**同域公开端点**，代码层必须自己兜住单请求成本：
+
+| 约束 | 值 | 说明 |
+|------|-----|------|
+| `MAX_MESSAGES` | 60 | 前端只发 ≤24 条（`config.maxMessages`），留 2.5 倍余量；超出返回 400。**校验必须先于图片分支**，否则识图请求会绕过它 |
+| `MAX_IMAGE_CHARS` | 8M 字符 | 约 6MB 图片（base64 膨胀 ~1.33x）；超出返回 413 |
+| `IMAGE_HISTORY_LIMIT` | 6 | 识图（understand）拼入的历史条数上限；**OCR 模式不带历史** |
+| `IMAGE_HISTORY_MAX_CHARS` | 6000 | 识图历史文本总量上限（从最近一条往前累计，超预算即停）。识图路径**没有** `trimMessagesToBudget` 兜底，缺这条会原样发出超大 payload |
+| `IMAGE_PROMPT_MAX_CHARS` | 2000 | 识图当前提问（prompt）截断上限 |
+| 非流式重试 | 仅 5xx + 网络异常 | 4xx（401/400/429）直接透传状态码，无退避重试会加剧限流；**读 body 失败也算网络层**，同样重试 |
+| `trimMessagesToBudget` | O(n) | 曾为 O(n²)：8000 条消息耗 55 秒 CPU，可被用来打满 Functions 限额 |
+
+- **`formatContent`（`js/ai-chat.js`）必须转义引号并做 URL 协议白名单**：链接的 URL 会拼进 `href` 属性且输出走 `innerHTML`，只转义 `& < >` 时 `[x](" onmouseover="…")` 可闭合属性注入脚本。白名单里的单斜杠分支要写成 `\/(?!\/)`，否则 `[x](//evil.com)` 这种协议相对 URL 会生成外站跳转链接。改动渲染逻辑后跑 `node scripts/test-ai-hardening.js`。
+- **`workers/index.js` 从未部署**，与 `functions/api/chat.js` 是重复实现（历史已漂移过）。改 chat 链路**两处都要改**；`test-ai-hardening.js` 有一项断言专门比对两边的关键常量，能挡住只改一处的疏漏。若不需要备用通道建议直接删除。
+- **限流/人机校验不在代码层**：需在 Cloudflare 侧配置（WAF Rate Limiting 或 Turnstile），否则端点可被匿名滥用、烧掉 SiliconFlow 免费额度。
+
 ## 知识库（RAG）
 
 知识库正文为 `Markdown/kb.md`（v2.1，约 46.9K 字符 / 28K token / 97 块），由 `shared/kb-retrieval.js` 在运行时按标题切块、按 bigram 覆盖率打分，取 top-4 注入 system prompt。
@@ -105,6 +124,12 @@ node scripts/kb-selftest.js   # 22 题自测，任一路由目标解析为 0 块
 ```
 
 **改检索策略必须做 A/B 回归**（用 20+ 题跑开关对比）——曾加"同章最多 2 块"配额，凭直觉以为更优，实测 2 例变好、5 例变差，已撤回。
+
+改动 AI 链路（`js/ai-chat.js` 渲染、`shared/kb-retrieval.js` 裁剪、`functions/api/chat.js`）后重跑：
+
+```bash
+node scripts/test-ai-hardening.js   # 35 项：XSS 拦截 / 裁剪等价性与复杂度 / 请求上限 / 识图历史与文本预算 / 重试策略 / 两后端常量一致
+```
 
 ## 本地开发
 

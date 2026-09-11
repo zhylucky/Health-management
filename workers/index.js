@@ -1,6 +1,14 @@
 // Cloudflare Worker: AI Chat + CORS Proxy
-// 备用 API 通道（主通道为 Pages Functions，见 functions/api/）
 // v2: 支持流式输出(SSE)、免费多模态识图(Qwen3.5-4B)、OCR 提取(DeepSeek-OCR)、参数透传
+//
+// ⚠️⚠️ 本 Worker 从未部署（wrangler deployments list --name jkkeji-api 报
+//        "This Worker does not exist on your account"），当前是**未生效代码**。
+//        线上 AI 走的是 Pages Functions 同域通道（functions/api/chat.js，主通道）。
+//
+// ⚠️ 维护须知：本文件与 functions/api/chat.js 是**近乎逐行的重复实现**（历史上已发生漂移：
+//    同为 messages 无效，此处曾返回 500 而 Pages 返回 400）。改动 chat 链路时**两处都要改**，
+//    否则一旦启用备用通道就会行为不一致。若确定不需要备用通道，建议直接删除 workers/ 与
+//    wrangler.jsonc 中的 Worker 配置，消除这份重复。
 
 const ALLOWED_ORIGINS = [
   'https://health.bbroot.com',
@@ -32,6 +40,10 @@ function buildCorsHeaders(request) {
 import KNOWLEDGE_BASE from '../Markdown/kb.md';
 import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, shouldSkipRetrieval, trimMessagesToBudget } from '../shared/kb-retrieval.js';
 
+// ═══ 请求上限防护（与 functions/api/chat.js 保持一致，改动需两处同步）═══
+const MAX_MESSAGES = 60;
+const MAX_IMAGE_CHARS = 8 * 1024 * 1024;
+
 // ═══ 图片消息处理：识图理解 / OCR 提取 ═══
 async function handleImage(request, env, body) {
   const { image, imageMode, messages } = body;
@@ -45,22 +57,49 @@ async function handleImage(request, env, body) {
   const imageModel = env.IMAGE_MODEL || 'Qwen/Qwen3.5-4B';
   const ocrModel = env.OCR_MODEL || 'deepseek-ai/DeepSeek-OCR';
 
+  // 文本侧上限（与 functions/api/chat.js 同逻辑）：图片本身有 MAX_IMAGE_CHARS，
+  // 但 prompt 与历史此前无约束 —— 识图路径没有 trimMessagesToBudget 兜底
+  const IMAGE_PROMPT_MAX_CHARS = 2000;
+  const IMAGE_HISTORY_MAX_CHARS = 6000;
+
   const lastText = (messages && messages.length > 0)
     ? messages[messages.length - 1].content
     : '';
+  const trimmedPrompt = typeof lastText === 'string' ? lastText.slice(0, IMAGE_PROMPT_MAX_CHARS) : '';
   const prompt = mode === 'ocr'
-    ? (typeof lastText === 'string' && lastText ? lastText : 'OCR this image. 提取图片中的全部文字，用 Markdown 输出。')
-    : (typeof lastText === 'string' && lastText ? lastText : '请描述这张图片的内容。');
+    ? (trimmedPrompt || 'OCR this image. 提取图片中的全部文字，用 Markdown 输出。')
+    : (trimmedPrompt || '请描述这张图片的内容。');
+
+  // 识图（understand）带上最近的文本历史（与 functions/api/chat.js 同逻辑）；
+  // OCR 不带历史——纯提取模型塞对话历史会干扰输出。条数与总字符数双上限。
+  const IMAGE_HISTORY_LIMIT = 6;
+  const history = [];
+  if (mode !== 'ocr' && Array.isArray(messages)) {
+    const recent = messages.slice(0, -1)
+      .filter(m => m && (m.role === 'user' || m.role === 'assistant')
+        && typeof m.content === 'string' && m.content.trim())
+      .slice(-IMAGE_HISTORY_LIMIT);
+    // 从最近一条往前累计，超出预算即停（保持历史连续，不跳着留）
+    let budget = IMAGE_HISTORY_MAX_CHARS;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].content.length > budget) break;
+      budget -= recent[i].content.length;
+      history.unshift({ role: recent[i].role, content: recent[i].content });
+    }
+  }
 
   const imageRequestBody = {
     model: mode === 'ocr' ? ocrModel : imageModel,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image_url', image_url: { url: image } },
-        { type: 'text', text: prompt }
-      ]
-    }],
+    messages: [
+      ...history,
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: image } },
+          { type: 'text', text: prompt }
+        ]
+      }
+    ],
     stream: isStream,
     // understand 2000：复杂图描述/长报告可能超 1000 token，太低会触发 length 截断（输出中断）；
     // OCR 1200：文字提取输出较短
@@ -136,8 +175,22 @@ async function handleChat(request, env) {
       throw new Error('API密钥未配置');
     }
 
+    // ── 条数上限：必须在图片分支之前，否则识图请求会绕过它（与 Pages 同逻辑）──
+    if (Array.isArray(messages) && messages.length > MAX_MESSAGES) {
+      return new Response(JSON.stringify({ error: `messages 条数超出上限（最多 ${MAX_MESSAGES} 条）` }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
     // ── 图片消息：识图理解 / OCR ──
     if (image) {
+      if (typeof image !== 'string' || image.length > MAX_IMAGE_CHARS) {
+        return new Response(JSON.stringify({ error: '图片过大或格式无效（上限约 6MB）' }), {
+          status: 413,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
       const result = await handleImage(request, env, body);
       // 流式时返回的是 SSE Response 直接透传；否则是普通对象转 JSON
       if (result instanceof Response) return result;
@@ -148,8 +201,13 @@ async function handleChat(request, env) {
     }
 
     // ── 文本对话 ──
+    // 参数错误直接返回 400：此前用 throw，会被外层 catch 统一变成 500，
+    // 与 Pages Functions 的 400 行为不一致（历史漂移点，已对齐）。
     if (!messages || !Array.isArray(messages)) {
-      throw new Error('messages 参数无效或缺失');
+      return new Response(JSON.stringify({ error: 'messages 参数无效或缺失' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
     }
 
     // 知识库检索注入（RAG：按问题检索相关片段，不再整库全量注入）
@@ -212,7 +270,8 @@ async function handleChat(request, env) {
       frequency_penalty: 0.3
     };
 
-    // Qwen 模型：关闭搜索，思考模式由前端配置控制（thinkingMode）；未传时默认 false 兼容旧前端
+    // Qwen 模型：关闭搜索；思考模式当前固定关闭（前端从不传 enable_thinking，
+    // 见 functions/api/chat.js 同处注释；要重新启用需前端支持渲染 reasoning_content）
     if (requestBody.model.includes('Qwen')) {
       requestBody.enable_search = false;
       requestBody.enable_thinking = typeof body.enable_thinking === 'boolean' ? body.enable_thinking : false;
@@ -248,13 +307,15 @@ async function handleChat(request, env) {
       });
     }
 
-    // ── 非流式模式：保留原重试逻辑 ──
+    // ── 非流式模式：只重试网络异常与 5xx（与 functions/api/chat.js 同逻辑）──
+    // 4xx（401 密钥/400 参数/429 限流）重试必然同样失败，且 429 无退避重试会加剧限流
     const maxRetries = 2;
     let lastError;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let resp, responseText;
       try {
-        const resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+        resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -262,30 +323,40 @@ async function handleChat(request, env) {
           },
           body: JSON.stringify(requestBody)
         });
+        // 读 body 也算网络层：连接在读完响应头后中断会在这里抛错，同样值得重试
+        responseText = await resp.text();
+      } catch (netError) {
+        lastError = netError;
+        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
 
-        const responseText = await resp.text();
-
-        if (!resp.ok) {
-          if (resp.status === 504 || resp.status === 503) {
-            throw new Error(`SiliconFlow API 暂时不可用：${resp.status}`);
-          }
-          throw new Error(`SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`);
-        }
-
-        const data = JSON.parse(responseText);
-        return new Response(JSON.stringify(data), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json', 'X-AI-Model': finalModel, ...corsHeaders }
-        });
-      } catch (error) {
-        lastError = error;
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      if (resp.ok) {
+        try {
+          return new Response(JSON.stringify(JSON.parse(responseText)), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', 'X-AI-Model': finalModel, ...corsHeaders }
+          });
+        } catch (parseError) {
+          return new Response(JSON.stringify({ error: 'AI 服务返回了非预期格式', details: parseError.message }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
         }
       }
+      if (resp.status < 500) {
+        return new Response(JSON.stringify({
+          error: `SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`
+        }), {
+          status: resp.status,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      lastError = new Error(`SiliconFlow API 暂时不可用：${resp.status}`);
+      if (attempt < maxRetries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
     }
 
-    return new Response(JSON.stringify({ error: 'AI 服务响应超时，请稍后重试', details: lastError.message }), {
+    return new Response(JSON.stringify({ error: 'AI 服务响应超时，请稍后重试', details: lastError?.message }), {
       status: 504,
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });

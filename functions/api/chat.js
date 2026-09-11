@@ -12,6 +12,15 @@ import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, sho
 // （Pages Functions 打包器不支持 .md 导入，故随站点发布后 fetch 读取）
 let KNOWLEDGE_BASE_CACHE = null;
 
+// ═══ 请求上限防护 ═══
+// 本端点是同域公开端点（无鉴权/无限流），必须有硬上限兜住单请求成本。
+// 前端正常只发 ≤24 条历史（config.maxMessages），这里留 2.5 倍余量；
+// 图片上限约 6MB（前端已压到 5MB 内 + 1280px，此处防的是绕过前端的直连请求）。
+// 注意：限流/人机校验需在 Cloudflare 侧配置（WAF Rate Limiting 或 Turnstile），
+// 代码层只能做这种纵深防护。
+const MAX_MESSAGES = 60;
+const MAX_IMAGE_CHARS = 8 * 1024 * 1024;
+
 async function loadKnowledgeBase(request) {
   if (KNOWLEDGE_BASE_CACHE) return KNOWLEDGE_BASE_CACHE;
   try {
@@ -45,20 +54,49 @@ async function handleImage(env, body) {
   const imageModel = env.IMAGE_MODEL || 'Qwen/Qwen3.5-4B';
   const ocrModel = env.OCR_MODEL || 'deepseek-ai/DeepSeek-OCR';
 
+  // 文本侧上限：图片本身有 MAX_IMAGE_CHARS，但 prompt 与历史此前无任何约束 ——
+  // 实测"小图 + 2MB 文本历史"会把 payload 原样发上游（文本路径有 trimMessagesToBudget 兜底，识图路径没有）
+  const IMAGE_PROMPT_MAX_CHARS = 2000;
+  const IMAGE_HISTORY_MAX_CHARS = 6000;
+
   const lastText = (messages && messages.length > 0) ? messages[messages.length - 1].content : '';
+  const trimmedPrompt = typeof lastText === 'string' ? lastText.slice(0, IMAGE_PROMPT_MAX_CHARS) : '';
   const prompt = mode === 'ocr'
-    ? (typeof lastText === 'string' && lastText ? lastText : 'OCR this image. 提取图片中的全部文字，用 Markdown 输出。')
-    : (typeof lastText === 'string' && lastText ? lastText : '请描述这张图片的内容。');
+    ? (trimmedPrompt || 'OCR this image. 提取图片中的全部文字，用 Markdown 输出。')
+    : (trimmedPrompt || '请描述这张图片的内容。');
+
+  // 识图（understand）带上最近的文本历史：此前只构造单条图片消息，把前端传来的全部
+  // 历史丢弃，"接着刚才的话题发张图"时模型看不到前文。
+  // OCR 不带历史——DeepSeek-OCR 是纯文字提取模型，塞对话历史会干扰输出。
+  // 条数与总字符数双上限，避免"图片 + 长历史"把 payload 撑大。
+  const IMAGE_HISTORY_LIMIT = 6;
+  const history = [];
+  if (mode !== 'ocr' && Array.isArray(messages)) {
+    const recent = messages.slice(0, -1)
+      .filter(m => m && (m.role === 'user' || m.role === 'assistant')
+        && typeof m.content === 'string' && m.content.trim())
+      .slice(-IMAGE_HISTORY_LIMIT);
+    // 从最近一条往前累计，超出预算即停（保持历史连续，不跳着留）
+    let budget = IMAGE_HISTORY_MAX_CHARS;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].content.length > budget) break;
+      budget -= recent[i].content.length;
+      history.unshift({ role: recent[i].role, content: recent[i].content });
+    }
+  }
 
   const imageRequestBody = {
     model: mode === 'ocr' ? ocrModel : imageModel,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image_url', image_url: { url: image } },
-        { type: 'text', text: prompt }
-      ]
-    }],
+    messages: [
+      ...history,
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: image } },
+          { type: 'text', text: prompt }
+        ]
+      }
+    ],
     stream: isStream,
     // understand 2000：复杂图描述/长报告可能超 1000 token，太低会触发 length 截断（输出中断）；
     // OCR 1200：文字提取输出较短
@@ -119,8 +157,17 @@ export async function onRequestPost(context) {
     const apiKey = env.SILICONFLOW_API_KEY;
     if (!apiKey) return json({ error: 'API密钥未配置' }, 500);
 
+    // ── 条数上限：必须在图片分支之前，否则识图请求会绕过它 ──
+    // （识图只取最后 6 条发给上游，但 slice/filter 仍要遍历传入的全部消息）
+    if (Array.isArray(messages) && messages.length > MAX_MESSAGES) {
+      return json({ error: `messages 条数超出上限（最多 ${MAX_MESSAGES} 条）` }, 400);
+    }
+
     // ── 图片消息 ──
     if (image) {
+      if (typeof image !== 'string' || image.length > MAX_IMAGE_CHARS) {
+        return json({ error: '图片过大或格式无效（上限约 6MB）' }, 413);
+      }
       const result = await handleImage(env, body);
       // 流式时返回的是 SSE Response 直接透传；否则是普通对象转 JSON
       return result instanceof Response ? result : json(result);
@@ -194,8 +241,11 @@ export async function onRequestPost(context) {
 
     if (requestBody.model.includes('Qwen')) {
       requestBody.enable_search = false;
-      // 思考模式由前端配置控制（thinkingMode）；未传时默认 false，兼容旧前端
-      // 避免平台默认开启思考导致 content 为空（旧前端无法解析 reasoning_content）
+      // 思考模式**当前固定关闭**。入参通道保留（便于将来启用），但前端从不传
+      // enable_thinking —— config/ai-chat-config.js 与 js/ai-chat.js 里都没有该字段
+      // （grep 可证），所以恒为 false。关闭原因：平台默认开启思考，思考会耗尽
+      // max_tokens 导致 content 为空，而前端不解析 reasoning_content，表现为"回答空白"。
+      // 若将来要重新启用，前端必须同步支持渲染 reasoning_content。
       requestBody.enable_thinking = typeof body.enable_thinking === 'boolean' ? body.enable_thinking : false;
     }
 
@@ -227,11 +277,15 @@ export async function onRequestPost(context) {
     }
 
     // ── 非流式 ──
+    // 只重试「值得重试」的失败：网络层异常与 5xx（上游临时故障）。
+    // 4xx 是请求/凭证本身的问题（401 密钥无效、400 参数错、429 限流），重试必然同样
+    // 失败；尤其 429 无退避地立即重试反而加剧限流，故直接透传上游状态码。
     const maxRetries = 2;
     let lastError;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let resp, responseText;
       try {
-        const resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+        resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -239,20 +293,29 @@ export async function onRequestPost(context) {
           },
           body: JSON.stringify(requestBody)
         });
-        const responseText = await resp.text();
-        if (!resp.ok) {
-          if (resp.status === 504 || resp.status === 503) {
-            throw new Error(`SiliconFlow API 暂时不可用：${resp.status}`);
-          }
-          throw new Error(`SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`);
-        }
-        return json(JSON.parse(responseText), 200, { 'X-AI-Model': finalModel });
-      } catch (error) {
-        lastError = error;
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        // 读 body 也算网络层：连接在读完响应头后中断会在这里抛错，同样值得重试
+        responseText = await resp.text();
+      } catch (netError) {
+        lastError = netError; // 网络层失败 → 可重试
+        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+
+      if (resp.ok) {
+        try {
+          return json(JSON.parse(responseText), 200, { 'X-AI-Model': finalModel });
+        } catch (parseError) {
+          // 200 但 body 不是 JSON：重试大概率还是同样结果，直接如实报错
+          return json({ error: 'AI 服务返回了非预期格式', details: parseError.message }, 502);
         }
       }
+      if (resp.status < 500) {
+        return json({
+          error: `SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`
+        }, resp.status);
+      }
+      lastError = new Error(`SiliconFlow API 暂时不可用：${resp.status}`);
+      if (attempt < maxRetries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
     }
     return json({ error: 'AI 服务响应超时，请稍后重试', details: lastError?.message }, 504);
   } catch (error) {

@@ -847,7 +847,10 @@ class AIChatWidget {
                     // 续写请求显式回传首轮实际模型（RAG 可能把模型切到 8B），
                     // 避免回落前端默认模型导致同一条回答首尾不一致；无该信息时回落默认
                     model: requestedModel || (hasImage ? this.config.imageModel : this.model),
-                    // 续写请求跳过知识库注入：保持与首轮相同的模型与提示词，避免回答中途换通道
+                    // 续写请求跳过知识库注入。注意：模型与首轮一致（靠 requestedModel 回传），
+                    // 但**提示词并不一致**——跳过注入意味着续写不带知识库片段，只有前端 systemPrompt。
+                    // 这是刻意的：续写时最后一条 user 消息是"请从中断处继续输出…"，
+                    // 拿它去检索会命中一堆无关片段，反而把上下文污染掉。
                     injectKnowledge: continuation ? false : true,
                     stream: isStream,
                     temperature: strategyCfg.temperature ?? 0.5,
@@ -1115,9 +1118,14 @@ class AIChatWidget {
         let text = content;
 
         // 1. 转义 HTML 特殊字符
+        //    引号必须一起转义：链接的 URL 会被拼进 <a href="..."> 属性，
+        //    只转 & < > 时，`[x](" onmouseover="alert(1))` 能闭合 href 并注入事件处理器
+        //    （实测可注入成功，且输出走 innerHTML → 真实 XSS 汇点）。
         text = text.replace(/&/g, '&amp;')
                    .replace(/</g, '&lt;')
-                   .replace(/>/g, '&gt;');
+                   .replace(/>/g, '&gt;')
+                   .replace(/"/g, '&quot;')
+                   .replace(/'/g, '&#39;');
 
         // 2. 代码块（```...```）
         text = text.replace(/```([\s\S]*?)```/g, (m, code) =>
@@ -1153,9 +1161,15 @@ class AIChatWidget {
         // 9. 斜体（无 lookbehind，兼容所有浏览器）
         text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
 
-        // 10. 链接
-        text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
-            '<a href="$2" target="_blank" rel="noopener">$1</a>');
+        // 10. 链接：仅放行 http/https 与站内相对路径/锚点；javascript:、data:、vbscript:
+        //     等协议不生成 <a>，退化为原文显示，避免点击执行脚本。
+        //     双引号已在第 1 步转义为 &quot;，属性闭合路径已被堵死，此处再收一层协议白名单。
+        //     `\/(?!\/)` 排除 `//host` 协议相对 URL（会跳到外站），只放行单斜杠站内路径。
+        text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => {
+            const url = href.trim();
+            if (!/^(?:https?:\/\/|\/(?!\/)|\.{1,2}\/|#)/i.test(url)) return m;
+            return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        });
 
         // 11. 段落：空行分段，单换行换 <br>
         const blocks = text.split(/\n{2,}/);
