@@ -299,7 +299,7 @@ class AIChatWidget {
                         <input type="file" id="chatImgInput" accept="image/*" hidden>
                         <div class="ai-chat-input-main">
                             <textarea class="chat-input-field" id="chatInput"
-                                placeholder="输入消息，回车发送，Shift+回车换行..." rows="1"></textarea>
+                                placeholder="今天想聊点什么..." rows="1"></textarea>
                         </div>
                         <div class="ai-chat-input-tools">
                             <button class="ai-chat-attach" id="chatImgBtn" title="发送图片（也可直接粘贴）">
@@ -310,7 +310,6 @@ class AIChatWidget {
                             </button>
                         </div>
                     </div>
-                    <div class="ai-chat-hint">Enter 发送 · Shift+Enter 换行 · 支持图片粘贴</div>
                 </div>
             </div>
         `;

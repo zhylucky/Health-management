@@ -1,5 +1,5 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="apple-blue-health">
 <head>
     <meta charset="UTF-8">
     <link rel="shortcut icon" type="image/x-icon" href="./images/favicon.ico">
@@ -39,6 +39,681 @@
 
     <!-- Lucide Icons（本地化，避免 Edge 跟踪防护拦截 unpkg） -->
     <script src="js/vendor/lucide.min.js" defer></script>
+
+<style id="apple-blue-health-theme">
+/* =========================================================
+   Apple-inspired White / Blue Health Theme
+   - 保留原有 DOM、功能、图片与链接
+   - 仅覆盖视觉表现
+   ========================================================= */
+
+:root {
+  --health-blue: #0a84ff;
+  --health-blue-dark: #0066cc;
+  --health-blue-soft: #eaf4ff;
+  --health-blue-pale: #f5faff;
+  --health-ink: #0b1f33;
+  --health-text: #1d1d1f;
+  --health-muted: #667085;
+  --health-line: rgba(15, 23, 42, 0.08);
+  --health-card: rgba(255, 255, 255, 0.82);
+  --health-radius: 28px;
+  --health-shadow: 0 18px 60px rgba(15, 61, 105, 0.10);
+  --health-shadow-soft: 0 8px 32px rgba(15, 61, 105, 0.07);
+}
+
+html {
+  scroll-behavior: smooth;
+  background: #fff;
+}
+
+body {
+  background:
+    radial-gradient(circle at 78% 4%, rgba(10,132,255,.09), transparent 25rem),
+    radial-gradient(circle at 8% 32%, rgba(90,180,255,.06), transparent 28rem),
+    #fff !important;
+  color: var(--health-text) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+               "SF Pro Text", "PingFang SC", "Helvetica Neue", Arial, sans-serif !important;
+  letter-spacing: -0.015em;
+}
+
+.container {
+  width: min(1180px, calc(100% - 48px)) !important;
+  max-width: 1180px !important;
+}
+
+/* Navigation */
+nav {
+  position: sticky !important;
+  top: 0;
+  z-index: 1000;
+  background: rgba(255,255,255,.76) !important;
+  border-bottom: 1px solid rgba(15,23,42,.07) !important;
+  backdrop-filter: saturate(180%) blur(22px) !important;
+  -webkit-backdrop-filter: saturate(180%) blur(22px) !important;
+}
+
+.nav-inner {
+  min-height: 68px !important;
+}
+
+.logo {
+  gap: 10px !important;
+}
+
+.logo img {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(10,132,255,.16);
+}
+
+.logo-text {
+  color: #111827 !important;
+  font-weight: 650 !important;
+  letter-spacing: -.02em;
+}
+
+nav a {
+  color: #344054 !important;
+  transition: color .2s ease, opacity .2s ease !important;
+}
+
+nav a:hover {
+  color: var(--health-blue) !important;
+}
+
+.nav-btn-primary,
+.nav-btn-outline {
+  border-radius: 999px !important;
+  font-weight: 600 !important;
+}
+
+.nav-btn-primary {
+  background: var(--health-blue) !important;
+  box-shadow: 0 6px 16px rgba(10,132,255,.22) !important;
+}
+
+.nav-btn-outline {
+  border: 1px solid rgba(10,132,255,.20) !important;
+  color: var(--health-blue) !important;
+  background: rgba(255,255,255,.65) !important;
+}
+
+/* Hero —— 背景渐变动态
+   参考 deepseek 首页：柔和色场缓慢漂移 + 极淡工程网格，整体向下淡出 */
+.hero {
+  min-height: 760px !important;
+  padding: 92px 0 100px !important;
+  background:
+    linear-gradient(180deg, #e6f0fc 0%, rgba(255,255,255,0) 72%),
+    radial-gradient(circle at 68% 28%, rgba(10,132,255,.13), transparent 23rem),
+    linear-gradient(180deg, #ffffff 0%, #f7fbff 100%) !important;
+  overflow: hidden;
+}
+
+/* 原先把容器和网格一起压到 .18，导致内部色斑实际只剩 ~4%，这里放开容器、单独控网格 */
+.hero-bg {
+  opacity: 1 !important;
+}
+
+.hero-grid {
+  opacity: 1 !important;
+  background-image:
+    linear-gradient(rgba(60,100,160,.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60,100,160,.07) 1px, transparent 1px) !important;
+  background-size: 90px 90px !important;
+  mask-image: linear-gradient(180deg, #000 0%, rgba(0,0,0,.8) 45%, transparent 100%) !important;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0,0,0,.8) 45%, transparent 100%) !important;
+}
+
+/* 用 radial-gradient 代替「模糊实心圆」：本身就是渐变，无需 filter，
+   动画只跑 transform，既不重新光栅化也不吃模糊滤镜的开销 */
+.hero-glow {
+  opacity: 1 !important;
+  filter: none !important;
+  animation: heroGlowDrift 30s ease-in-out infinite alternate;
+}
+
+/* 椭圆 + 错开时长相位：三个色斑各自旋转变形，合成起来像一片渐变在缓慢流动 */
+.glow-1 {
+  width: 640px;
+  height: 470px;
+  background: radial-gradient(closest-side, rgba(37,99,235,.17) 0%, rgba(37,99,235,.06) 55%, rgba(37,99,235,0) 100%) !important;
+  animation-duration: 30s;
+  animation-delay: -6s;
+}
+
+.glow-2 {
+  width: 540px;
+  height: 640px;
+  background: radial-gradient(closest-side, rgba(96,165,250,.20) 0%, rgba(96,165,250,.07) 55%, rgba(96,165,250,0) 100%) !important;
+  animation-duration: 36s;
+  animation-delay: -18s;
+}
+
+.glow-3 {
+  width: 470px;
+  height: 390px;
+  background: radial-gradient(closest-side, rgba(129,140,248,.16) 0%, rgba(129,140,248,.05) 55%, rgba(129,140,248,0) 100%) !important; /* 原为绿色，改蓝紫以贴合蓝白基调 */
+  animation-duration: 26s;
+  animation-delay: -24s;
+}
+
+@keyframes heroGlowDrift {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  33%  { transform: translate3d(18%, -13%, 0) rotate(16deg) scale(1.22); }
+  66%  { transform: translate3d(-15%, 11%, 0) rotate(-12deg) scale(.86); }
+  100% { transform: translate3d(9%, 8%, 0) rotate(7deg) scale(1.14); }
+}
+
+.hero-grid-layout {
+  align-items: center !important;
+  gap: 56px !important;
+}
+
+.hero-content {
+  max-width: 620px !important;
+}
+
+.hero-badge {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px !important;
+  margin-bottom: 22px !important;
+  border: 1px solid rgba(10,132,255,.14) !important;
+  border-radius: 999px !important;
+  background: rgba(255,255,255,.72) !important;
+  color: var(--health-blue) !important;
+  box-shadow: var(--health-shadow-soft) !important;
+  backdrop-filter: blur(16px);
+}
+
+.hero-title-panel {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+.hero-label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: clamp(18px, 2vw, 24px);
+  font-weight: 650;
+  color: var(--health-blue);
+  letter-spacing: -.025em;
+}
+
+.thermal-wordmark {
+  display: block;
+  font-size: clamp(52px, 6vw, 88px) !important;
+  line-height: .98 !important;
+  letter-spacing: -.055em !important;
+}
+
+.hero-desc {
+  max-width: 520px;
+  margin-top: 28px !important;
+  color: #667085 !important;
+  font-size: clamp(17px, 1.6vw, 21px) !important;
+  line-height: 1.65 !important;
+}
+
+.hero-actions {
+  margin-top: 32px !important;
+  gap: 12px !important;
+}
+
+.btn {
+  border-radius: 999px !important;
+  font-weight: 600 !important;
+  letter-spacing: -.01em;
+  transition: transform .2s ease, box-shadow .2s ease, background .2s ease !important;
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+}
+
+.btn-primary {
+  background: var(--health-blue) !important;
+  border-color: var(--health-blue) !important;
+  box-shadow: 0 10px 26px rgba(10,132,255,.20) !important;
+}
+
+.btn-ghost {
+  color: #344054 !important;
+  background: #fff !important;
+  border: 1px solid rgba(15,23,42,.09) !important;
+}
+
+.hero-stats {
+  margin-top: 46px !important;
+  padding-top: 22px;
+  border-top: 1px solid var(--health-line);
+  gap: 30px !important;
+}
+
+.hero-stat-num {
+  color: #111827 !important;
+  font-weight: 680 !important;
+}
+
+.hero-stat-label {
+  color: #7a8699 !important;
+}
+
+.hero-visual {
+  min-height: 600px;
+}
+
+.phone-float {
+  filter: drop-shadow(0 36px 70px rgba(30,75,120,.18));
+}
+
+.phone-frame {
+  padding: 10px !important;
+  border: 1px solid rgba(255,255,255,.9) !important;
+  border-radius: 42px !important;
+  background: linear-gradient(145deg, #fefefe, #eaf4ff) !important;
+  box-shadow:
+    0 0 0 1px rgba(10,132,255,.05),
+    0 34px 90px rgba(24,72,120,.16) !important;
+}
+
+.phone-mockup {
+  border-radius: 34px !important;
+}
+
+.float-card {
+  border: 1px solid rgba(255,255,255,.9) !important;
+  background: rgba(255,255,255,.78) !important;
+  box-shadow: 0 16px 44px rgba(30,75,120,.12) !important;
+  backdrop-filter: blur(18px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(150%) !important;
+  border-radius: 18px !important;
+}
+
+.fc-value {
+  color: #0f172a !important;
+  font-weight: 650 !important;
+}
+
+/* Global sections */
+section {
+  border: 0 !important;
+}
+
+.brand-trust,
+.ai-capabilities,
+.ai-flow,
+.ai-report,
+.testimonials {
+  padding-top: 110px !important;
+  padding-bottom: 110px !important;
+}
+
+.brand-trust,
+.ai-report {
+  background: #fff !important;
+}
+
+.ai-capabilities,
+.testimonials {
+  background: #f6faff !important;
+}
+
+.ai-flow {
+  background: linear-gradient(180deg, #f8fbff 0%, #fff 100%) !important;
+}
+
+.section-title {
+  color: #111827 !important;
+  font-size: clamp(34px, 4vw, 52px) !important;
+  letter-spacing: -.045em !important;
+  font-weight: 680 !important;
+}
+
+.section-subtitle {
+  color: #667085 !important;
+  font-size: 18px !important;
+  line-height: 1.6 !important;
+}
+
+/* Brand / media */
+.media-card {
+  margin-top: 42px !important;
+  border-radius: var(--health-radius) !important;
+  border: 1px solid var(--health-line) !important;
+  background: linear-gradient(135deg, #fff, #f5faff) !important;
+  box-shadow: var(--health-shadow-soft) !important;
+}
+
+.media-card-inner {
+  padding: 30px !important;
+}
+
+.media-card-logo img {
+  border-radius: 16px;
+}
+
+.media-card-info h3 {
+  color: #172033 !important;
+}
+
+.media-card-info p {
+  color: #667085 !important;
+}
+
+.btn-danger {
+  background: #DC2626 !important;
+  border-color: #DC2626 !important;
+  color: #fff !important;
+  box-shadow: 0 8px 20px rgba(220,38,38,.22) !important;
+}
+
+.btn-danger:hover {
+  background: #B91C1C !important;
+  border-color: #B91C1C !important;
+  box-shadow: 0 12px 26px rgba(220,38,38,.28) !important;
+}
+
+/* Capability cards */
+.cap-grid {
+  gap: 18px !important;
+  margin-top: 48px !important;
+}
+
+.cap-card {
+  min-height: 240px;
+  padding: 32px !important;
+  border-radius: var(--health-radius) !important;
+  border: 1px solid rgba(10,132,255,.08) !important;
+  background: rgba(255,255,255,.86) !important;
+  box-shadow: var(--health-shadow-soft) !important;
+  transition: transform .25s ease, box-shadow .25s ease !important;
+}
+
+.cap-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--health-shadow) !important;
+}
+
+.cap-icon {
+  width: 50px !important;
+  height: 50px !important;
+  display: grid;
+  place-items: center;
+  border-radius: 15px !important;
+  color: var(--health-blue) !important;
+  background: var(--health-blue-soft) !important;
+}
+
+.cap-card h3 {
+  margin-top: 24px !important;
+  color: #162033 !important;
+}
+
+.cap-card p {
+  color: #6b7280 !important;
+  line-height: 1.7 !important;
+}
+
+/* AI flow */
+.flow-steps {
+  margin-top: 54px !important;
+  padding: 30px 20px !important;
+  border-radius: 30px !important;
+  border: 1px solid rgba(10,132,255,.08) !important;
+  background: rgba(255,255,255,.86) !important;
+  box-shadow: var(--health-shadow-soft) !important;
+}
+
+.flow-icon {
+  border: 1px solid rgba(10,132,255,.10) !important;
+  background: linear-gradient(145deg, #eef7ff, #ffffff) !important;
+  color: var(--health-blue) !important;
+  box-shadow: 0 10px 22px rgba(10,132,255,.08);
+}
+
+/* Stats */
+.stats-section {
+  padding: 82px 0 !important;
+  background: #0a84ff !important;
+  color: #fff !important;
+}
+
+.stats-grid {
+  gap: 12px !important;
+}
+
+.stat-item {
+  padding: 28px 18px !important;
+  border-right: 1px solid rgba(255,255,255,.20);
+}
+
+.stat-item:last-child {
+  border-right: 0;
+}
+
+.stat-number,
+.stat-unit,
+.stat-label {
+  color: #fff !important;
+}
+
+.stat-number {
+  font-weight: 700 !important;
+  letter-spacing: -.05em;
+}
+
+/* Report */
+.report-showcase {
+  margin-top: 48px !important;
+  gap: 62px !important;
+  align-items: center !important;
+}
+
+.report-card {
+  border-radius: 34px !important;
+  background: linear-gradient(145deg, #f3f8ff, #ffffff) !important;
+  box-shadow: 0 28px 75px rgba(24,72,120,.15) !important;
+  border: 1px solid rgba(10,132,255,.08) !important;
+}
+
+.report-card-img img {
+  border-radius: 28px !important;
+}
+
+.report-feature {
+  padding: 22px 0 !important;
+  border-bottom: 1px solid var(--health-line);
+}
+
+.report-feature:last-child {
+  border-bottom: 0;
+}
+
+.report-feature > i {
+  color: var(--health-blue) !important;
+  background: var(--health-blue-soft) !important;
+  border-radius: 14px;
+  padding: 9px;
+}
+
+.report-feature h4 {
+  color: #162033 !important;
+}
+
+.report-feature p {
+  color: #697586 !important;
+  line-height: 1.65 !important;
+}
+
+/* Testimonials */
+.test-grid {
+  gap: 18px !important;
+  margin-top: 48px !important;
+}
+
+.test-card {
+  padding: 30px !important;
+  border-radius: 26px !important;
+  border: 1px solid rgba(15,23,42,.06) !important;
+  background: #fff !important;
+  box-shadow: var(--health-shadow-soft) !important;
+}
+
+.test-stars {
+  color: var(--health-blue) !important;
+  letter-spacing: .12em;
+}
+
+.test-text {
+  color: #344054 !important;
+  line-height: 1.8 !important;
+}
+
+/* Download */
+.download {
+  padding: 110px 0 !important;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(10,132,255,.16), transparent 28rem),
+    linear-gradient(180deg, #f2f8ff 0%, #fff 100%) !important;
+}
+
+.dl-grid {
+  margin-top: 48px !important;
+  padding: 42px !important;
+  border: 1px solid rgba(10,132,255,.08) !important;
+  border-radius: 34px !important;
+  background: rgba(255,255,255,.84) !important;
+  box-shadow: var(--health-shadow) !important;
+  backdrop-filter: blur(20px);
+}
+
+.dl-app-icon img {
+  border-radius: 22px;
+  box-shadow: 0 16px 34px rgba(10,132,255,.13);
+}
+
+.dl-info h3 {
+  color: #111827 !important;
+  font-weight: 680 !important;
+}
+
+.dl-tagline {
+  color: #697586 !important;
+}
+
+.dl-meta {
+  color: #667085 !important;
+}
+
+.dl-btn {
+  min-width: 230px;
+}
+
+.dl-platform {
+  border-radius: 999px !important;
+  border: 1px solid rgba(10,132,255,.10) !important;
+  background: #f6faff !important;
+  color: #475467 !important;
+}
+
+/* Small motion: restrained, not "AI dashboard" */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .container {
+    width: min(100% - 32px, 720px) !important;
+  }
+
+  .hero {
+    padding: 70px 0 80px !important;
+  }
+
+  .hero-grid-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .hero-visual {
+    min-height: 500px;
+  }
+
+  .stat-item {
+    border-right: 0;
+    border-bottom: 1px solid rgba(255,255,255,.16);
+  }
+
+  .stat-item:last-child {
+    border-bottom: 0;
+  }
+
+  .dl-grid {
+    padding: 28px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .container {
+    width: calc(100% - 28px) !important;
+  }
+
+  .hero {
+    min-height: auto !important;
+    padding: 52px 0 66px !important;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hero-actions .btn {
+    width: 100%;
+  }
+
+  .hero-stats {
+    gap: 18px !important;
+  }
+
+  .cap-card,
+  .test-card {
+    padding: 24px !important;
+  }
+
+  .media-card-inner {
+    padding: 24px !important;
+  }
+
+  .dl-grid {
+    padding: 22px !important;
+    border-radius: 26px !important;
+  }
+
+  .phone-frame {
+    border-radius: 34px !important;
+  }
+
+  .phone-mockup {
+    border-radius: 27px !important;
+  }
+}
+</style>
+
 </head>
 <body>
     <!-- 导航栏 -->
@@ -360,50 +1035,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- ═══════════════ FAQ ═══════════════ -->
-        <section class="faq" aria-labelledby="faq-title">
-            <div class="container">
-                <h2 id="faq-title" class="section-title" data-reveal>常见问题</h2>
-                <div class="faq-list" data-reveal>
-                    <details class="faq-item">
-                        <summary>
-                            <span>支持哪些设备？</span>
-                            <i data-lucide="chevron-down" class="icon-sm faq-chevron"></i>
-                        </summary>
-                        <div class="faq-answer">目前支持 Android 8.0 及以上系统的智能手机。HarmonyOS 和 iOS 版本正在规划中，敬请期待。</div>
-                    </details>
-                    <details class="faq-item">
-                        <summary>
-                            <span>AI分析准确吗？</span>
-                            <i data-lucide="chevron-down" class="icon-sm faq-chevron"></i>
-                        </summary>
-                        <div class="faq-answer">我们的AI分析基于临床对照验证，传感器检测误差≤2%，健康风险识别准确率达92%，报告经过专业医疗团队审核校准。</div>
-                    </details>
-                    <details class="faq-item">
-                        <summary>
-                            <span>数据安全吗？</span>
-                            <i data-lucide="chevron-down" class="icon-sm faq-chevron"></i>
-                        </summary>
-                        <div class="faq-answer">所有健康数据均采用端到端加密存储，符合国家数据安全法规。我们严格遵守隐私保护政策，不会将您的数据用于商业用途。</div>
-                    </details>
-                    <details class="faq-item">
-                        <summary>
-                            <span>如何下载？</span>
-                            <i data-lucide="chevron-down" class="icon-sm faq-chevron"></i>
-                        </summary>
-                        <div class="faq-answer">您可以直接在本页面下方点击下载按钮获取APK安装包，或扫描二维码在手机浏览器中打开官网下载。安装包约15.7MB。</div>
-                    </details>
-                    <details class="faq-item">
-                        <summary>
-                            <span>收费吗？</span>
-                            <i data-lucide="chevron-down" class="icon-sm faq-chevron"></i>
-                        </summary>
-                        <div class="faq-answer">App免费下载，基础健康监测和报告功能完全免费。高级AI深度分析功能提供会员订阅服务，详情请查看App内说明。</div>
-                    </details>
                 </div>
             </div>
         </section>

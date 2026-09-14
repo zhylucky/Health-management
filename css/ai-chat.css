@@ -1,7 +1,47 @@
 /* ════════════════════════════════════════════
-   AI 助手 v3 样式 - 商业医疗蓝白
-   仿 Perplexity / Claude / ChatGPT 网页聊天风格
+   AI 助手样式 - 对齐 deepseek.com 设计语言
+   （配色 / 圆角 / 间距 / 字重 均取自 deepseek 的 --ds-* 设计令牌）
    ════════════════════════════════════════════ */
+
+:root {
+    /* ── deepseek 设计令牌 ── */
+    --ds-color-brand: #4d6bfe;
+    --ds-color-brand-deep: #3a65c2;
+    --ds-color-text-primary: #1e232c;
+    --ds-color-text-primary-bluish: #152443;
+    --ds-color-text-link-blue: #234792;
+    --ds-color-text-secondary: rgba(0, 0, 0, .7);
+    --ds-color-text-description: rgba(0, 0, 0, .65);
+    --ds-color-text-placeholder: #8691a1;
+    --ds-color-bg-surface-3: rgba(0, 0, 0, .03);
+    --ds-color-bg-surface-5: rgba(0, 0, 0, .05);
+    --ds-color-bg-overlay: #fff;
+    --ds-color-bg-surface-raised: hsla(0, 0%, 100%, .45);
+    --ds-color-bg-code: rgba(0, 0, 0, .05);
+    --ds-color-bg-hover: rgba(0, 0, 0, .04);
+    --ds-color-scrollbar: rgba(0, 0, 0, .15);
+    --ds-color-border-subtle: rgba(0, 0, 0, .06);
+    --ds-color-border-default: rgba(0, 0, 0, .1);
+    --ds-color-border-divider: rgba(0, 0, 0, .08);
+    --ds-btn-secondary-bg: hsla(0, 0%, 100%, .4);
+    --ds-btn-secondary-border: rgba(9, 45, 78, .18);
+    --ds-btn-secondary-hover-border: rgba(9, 45, 78, .36);
+    --ds-radius-pill: 100px;
+    --ds-radius-card: 24px;
+    --ds-radius-panel: 16px;
+    --ds-radius-media: 12px;
+    --ds-radius-sm: 8px;
+    --ds-blur-glass: 12px;
+    --ds-shadow-card: 0 0 0 1px #f1f5f9, 0 2px 4px rgba(0, 0, 0, .05), 0 12px 24px rgba(0, 0, 0, .05);
+    /* deepseek 用品牌色低透明度做用户气泡；颜色取 --ds-color-brand */
+    --ai-user-bubble: rgba(77, 107, 254, .08);
+    --ai-user-bubble-code: rgba(77, 107, 254, .1);
+    /* 空状态输入框从底部上移的距离。
+       上限推导：可用高度 = 弹窗高 min(810px,88vh) − 顶部栏 − 输入框 − 欢迎区内容，
+       取 510px 作为「顶部栏+输入框+欢迎区」的实测总占用，故 26vh 之下再压一道 min()，
+       保证窗口变矮时 lift 自动收小、欢迎区永不被顶部裁掉（实测 720/640 高度均无裁切）。 */
+    --ai-composer-lift: max(0px, min(26vh, calc(min(810px, 88vh) - 510px)));
+}
 
 * {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
@@ -18,33 +58,36 @@
     border: none;
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 6px 24px rgba(37, 99, 235, .35);
+    /* 深色悬浮元素改为中性柔和投影，不用品牌色发光 */
+    box-shadow: 0 0 0 1px var(--ds-color-border-subtle), 0 8px 24px rgba(15, 23, 42, .14);
     z-index: 1000;
     background-image: url('../images/douyan.png');
     background-size: 100%;
     background-position: center;
     background-repeat: no-repeat;
-    transition: transform .25s, box-shadow .25s;
+    transition: transform .25s ease, box-shadow .25s ease;
 }
 .ai-chat-float-btn:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 10px 32px rgba(37, 99, 235, .45);
+    transform: translateY(-2px);
+    box-shadow: 0 0 0 1px var(--ds-color-border-subtle), 0 12px 30px rgba(15, 23, 42, .2);
 }
-.ai-chat-float-btn:active { transform: translateY(-1px); }
+.ai-chat-float-btn:active { transform: translateY(0); }
 
 /* ─── 聊天主窗口（弹窗模式） ─── */
 .ai-chat-container {
     position: fixed;
     top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%) scale(0.92);
+    transform: translate(-50%, -50%) scale(.96);
     width: min(1080px, 95vw);
     height: min(810px, 88vh);
     max-width: 95vw;
     max-height: 90vh;
-    background: #fff;
-    border-radius: 20px;
-    box-shadow: 0 25px 80px rgba(0, 0, 0, .25);
+    /* 蓝白渐变底。底色刻意做得很淡（用户反馈重了），蓝调靠 ::before 的色斑叠加出来 */
+    background: linear-gradient(180deg, #ecf3fd 0%, #f6fafe 34%, #f2f8fe 66%, #e9f2fc 100%);
+    border: 1px solid var(--ds-color-border-subtle);
+    border-radius: var(--ds-radius-card);
+    box-shadow: var(--ds-shadow-card), 0 24px 64px rgba(15, 23, 42, .12);
     z-index: 1001;
     display: flex;
     flex-direction: column;
@@ -52,7 +95,24 @@
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transition: opacity .25s, visibility .25s, transform .3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    /* 收起了回弹曲线：deepseek 的动效是克制的缓出，不做 overshoot */
+    transition: opacity .22s ease, visibility .22s ease, transform .28s cubic-bezier(.16, 1, .3, 1);
+}
+/* 蓝白色场：只用几枚柔和的径向渐变叠在蓝白线性渐变上，保持"简单"。
+   刻意不做动画、不加点阵/网格等纹理 —— 容器内有多处 backdrop-filter，
+   背景一旦持续变化它们每帧都要重算模糊（实测过掉帧），静止背景才能让模糊结果被缓存。 */
+.ai-chat-container::before {
+    content: '';
+    position: absolute;
+    /* 静态色场不需要外扩，直接铺满容器，图层面积更小 */
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        radial-gradient(62% 48% at 18% 10%, rgba(77, 107, 254, .13), transparent 70%),
+        radial-gradient(54% 42% at 84% 4%, rgba(115, 163, 210, .14), transparent 72%),
+        /* 输入框所在波段留一枚，让液态玻璃透出来时带蓝调 */
+        radial-gradient(48% 34% at 62% 80%, rgba(77, 107, 254, .10), transparent 74%);
 }
 .ai-chat-container.show {
     opacity: 1;
@@ -66,12 +126,16 @@
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, .5);
+    /* ⚠️ 这里刻意不加 backdrop-filter：全屏 1440x900 的模糊，
+       而其背后是首页 hero 一直在动的色斑 → 每帧都要把整屏重新糊一遍。
+       实测它是打开弹窗掉帧的最大单点（去掉后 fps 26.8 → 39.7）。
+       改用稍深一点的通透遮罩来补回层次。 */
+    background: rgba(15, 23, 42, .34);
     z-index: 1000;
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
-    transition: opacity .25s, visibility .25s;
+    transition: opacity .22s ease, visibility .22s ease;
 }
 .ai-chat-overlay.show {
     opacity: 1;
@@ -79,32 +143,39 @@
     pointer-events: auto;
 }
 
-/* ─── 顶部 ─── */
+/* ─── 顶部（玻璃质感，与页面内容分层） ─── */
 .ai-chat-header {
     flex-shrink: 0;
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    padding: 12px 20px;
-    border-bottom: 1px solid #f0f0f0;
-    background: #fff;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--ds-color-border-subtle);
+    background: var(--ds-color-bg-surface-raised);
+    backdrop-filter: blur(var(--ds-blur-glass));
+    -webkit-backdrop-filter: blur(var(--ds-blur-glass));
 }
-.ai-chat-close {
-    justify-self: start;
-    background: #e5e7eb;
-    border: 2px solid #d1d5db;
-    color: #111827;
-    width: 38px;
-    height: 38px;
+.ai-chat-close,
+.ai-chat-clear {
+    width: 36px;
+    height: 36px;
+    border: none;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 16px;
+    background: transparent;
+    /* 左上关闭 / 右上清空：按用户要求统一用红色显示 */
+    color: #dc2626;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background .15s, color .15s;
+    transition: background .2s ease, color .2s ease;
 }
-.ai-chat-close:hover { background: #d1d5db; color: #000; }
+.ai-chat-close { justify-self: start; }
+.ai-chat-close:hover,
+.ai-chat-clear:hover {
+    background: rgba(220, 38, 38, .10);
+    color: #b91c1c;
+}
 .ai-chat-title {
     display: flex;
     flex-direction: column;
@@ -112,94 +183,93 @@
     text-align: center;
 }
 .ai-chat-name {
-    font-size: 16px;
-    font-weight: 600;
-    color: #111827;
-    line-height: 1.2;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--ds-color-text-primary);
+    letter-spacing: -.01em;
+    line-height: 1.25;
 }
 .ai-chat-subtitle {
-    font-size: 11px;
-    color: #9ca3af;
-    margin-top: 2px;
+    font-size: 12px;
+    color: var(--ds-color-text-placeholder);
+    margin-top: 1px;
 }
 .ai-chat-actions {
     justify-self: end;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 4px;
 }
 .ai-chat-model-select {
-    border: 1px solid #d1d5db;
-    background: #f3f4f6;
-    border-radius: 8px;
-    padding: 5px 10px;
+    border: 1px solid var(--ds-color-border-default);
+    background: var(--ds-btn-secondary-bg);
+    border-radius: var(--ds-radius-pill);
+    padding: 5px 12px;
     font-size: 12px;
     font-weight: 500;
-    color: #374151;
+    color: var(--ds-color-text-primary);
     cursor: pointer;
     outline: none;
-    transition: border-color .15s;
+    transition: border-color .2s ease;
 }
-.ai-chat-model-select:hover { border-color: #2563EB; }
-.ai-chat-clear {
-    background: #e5e7eb;
-    border: 2px solid #d1d5db;
-    color: #374151;
-    width: 38px;
-    height: 38px;
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background .15s, color .15s;
-}
-.ai-chat-clear:hover { background: #fecaca; color: #b91c1c; border-color: #f87171; }
+.ai-chat-model-select:hover { border-color: var(--ds-btn-secondary-hover-border); }
 .ai-chat-img-remove {
     background: transparent;
     border: none;
-    color: #6b7280;
+    color: var(--ds-color-text-placeholder);
     width: 32px;
     height: 32px;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 13px;
-    transition: background .15s, color .15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .2s ease, color .2s ease;
 }
-.ai-chat-img-remove:hover { background: #f3f4f6; color: #2563EB; }
+.ai-chat-img-remove:hover { background: var(--ds-color-bg-hover); color: var(--ds-color-text-primary); }
 
 /* ─── 消息区 ─── */
 .ai-chat-messages {
     flex: 1;
     overflow-y: auto;
-    background: #fff;
+    background: transparent;
     /* 不用 scroll-behavior:smooth：流式输出每帧 scrollTop 赋值会不断重启
        平滑滚动动画（滚动被"拖着走"、遇到送帧间隙就跳），造成输出卡顿。
        消息区程序化滚动保持即时跳转（用户滚轮/触摸滚动不受此属性影响） */
     overflow-anchor: none;
+    /* deepseek 式滚动条：平时透明，悬停/聚焦才显形 */
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    transition: scrollbar-color .2s ease;
 }
+.ai-chat-messages:hover,
+.ai-chat-messages:focus-within { scrollbar-color: var(--ds-color-scrollbar) transparent; }
 .ai-chat-messages::-webkit-scrollbar { width: 6px; }
+.ai-chat-messages::-webkit-scrollbar-track { background: transparent; }
 .ai-chat-messages::-webkit-scrollbar-thumb {
-    background: #d1d5db;
-    border-radius: 3px;
+    background-color: transparent;
+    border-radius: var(--ds-radius-pill);
+    transition: background-color .2s ease;
 }
-.ai-chat-messages::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+.ai-chat-messages:hover::-webkit-scrollbar-thumb,
+.ai-chat-messages:focus-within::-webkit-scrollbar-thumb {
+    background-color: var(--ds-color-scrollbar);
+}
 
 .chat-message {
     display: flex;
-    gap: 14px;
-    padding: 18px 24px;
-    max-width: 800px;
+    gap: 12px;
+    padding: 16px 28px;
+    max-width: 820px;
     margin: 0 auto;
 }
 .chat-message + .chat-message {
-    margin-top: 4px;
+    margin-top: 2px;
 }
 .chat-message.user {
     flex-direction: row-reverse;
     transform-origin: bottom right;
-    animation: bubblePop .4s cubic-bezier(.16,1,.3,1) backwards;
+    animation: bubblePop .4s cubic-bezier(.16, 1, .3, 1) backwards;
 }
 .chat-message.assistant {
     transform-origin: bottom left;
@@ -217,7 +287,11 @@
     font-size: 14px;
     color: #fff;
 }
-.chat-avatar.user { background: #2563EB; }
+/* 用户头像由实心蓝改为品牌浅底，避免与品牌色大面积冲撞 */
+.chat-avatar.user {
+    background: var(--ai-user-bubble);
+    color: var(--ds-color-brand-deep);
+}
 .chat-avatar.assistant {
     background-image: url('../images/douyan.png');
     background-size: cover;
@@ -226,23 +300,25 @@
 
 .chat-bubble {
     min-width: 0;
-    color: #1f2937;
+    color: var(--ds-color-text-primary);
     line-height: 1.7;
     font-size: 15px;
     word-wrap: break-word;
-    padding: 10px 16px;
-    border-radius: 16px;
-    max-width: 82%;
-    background: #f3f4f6;
 }
+/* AI 回答不再套气泡：直接铺在浅底上（deepseek 的呈现方式），留白更足 */
 .chat-message.assistant .chat-bubble {
-    background: #f3f4f6;
-    border-bottom-left-radius: 4px;
+    background: transparent;
+    padding: 2px 0;
+    border-radius: 0;
+    max-width: 100%;
 }
 .chat-message.user .chat-bubble {
-    background: #2563EB;
-    color: #fff;
-    border-bottom-right-radius: 4px;
+    background: var(--ai-user-bubble);
+    color: var(--ds-color-text-primary);
+    padding: 10px 16px;
+    border-radius: var(--ds-radius-panel);
+    border-bottom-right-radius: 6px;
+    max-width: 82%;
 }
 .chat-bubble p { margin: 6px 0; }
 .chat-bubble p:first-child { margin-top: 0; }
@@ -251,10 +327,11 @@
 .chat-bubble h2,
 .chat-bubble h3,
 .chat-bubble h4 {
-    margin: 14px 0 6px;
-    font-weight: 600;
-    color: #111827;
-    line-height: 1.3;
+    margin: 16px 0 6px;
+    font-weight: 500;
+    color: var(--ds-color-text-primary);
+    line-height: 1.35;
+    letter-spacing: -.01em;
 }
 .chat-bubble h1 { font-size: 20px; }
 .chat-bubble h2 { font-size: 18px; }
@@ -262,38 +339,44 @@
 .chat-bubble h4 { font-size: 15px; }
 .chat-bubble ul,
 .chat-bubble ol { margin: 6px 0 6px 24px; }
+/* 站点全局 reset 有 ul,ol{list-style:none}（css/index.css），会波及聊天正文，
+   导致 AI 的列表没有标记 —— 这里为回答内容补回 */
+.chat-bubble ul { list-style: disc outside; }
+.chat-bubble ul ul { list-style: circle outside; }
+.chat-bubble ol { list-style: decimal outside; }
 .chat-bubble li { margin: 3px 0; }
 .chat-bubble code {
-    background: #f3f4f6;
-    color: #d6336c;
+    background: var(--ds-color-bg-code);
+    color: var(--ds-color-text-primary);
     padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: var(--ds-radius-sm);
     font-size: 13px;
     font-family: 'SF Mono', Menlo, Consolas, monospace;
 }
 .chat-bubble pre {
-    background: #1f2937;
-    color: #f3f4f6;
+    background: var(--ds-color-bg-surface-3);
+    border: 1px solid var(--ds-color-border-subtle);
+    color: var(--ds-color-text-primary);
     padding: 12px 16px;
-    border-radius: 8px;
+    border-radius: var(--ds-radius-media);
     overflow-x: auto;
     margin: 8px 0;
     font-size: 13px;
-    line-height: 1.5;
+    line-height: 1.6;
 }
 .chat-bubble pre code {
     background: transparent;
     color: inherit;
     padding: 0;
 }
-.chat-bubble strong { font-weight: 600; color: #111827; }
+.chat-bubble strong { font-weight: 600; color: var(--ds-color-text-primary); }
 .chat-bubble em { font-style: italic; }
-.chat-bubble a { color: #2563EB; text-decoration: none; }
+.chat-bubble a { color: var(--ds-color-text-link-blue); text-decoration: none; }
 .chat-bubble a:hover { text-decoration: underline; }
 .chat-bubble hr {
     border: none;
-    border-top: 1px solid #e5e7eb;
-    margin: 12px 0;
+    border-top: 1px solid var(--ds-color-border-divider);
+    margin: 14px 0;
 }
 
 /* ─── 流式输出：分块增量渲染的顺滑优化 ─── */
@@ -303,25 +386,17 @@
     word-break: break-word;
 }
 
-/* 用户蓝色气泡内的内容配色（覆盖深色链接/标题等） */
-.chat-message.user .chat-bubble a { color: #fff; text-decoration: underline; }
-.chat-message.user .chat-bubble a:hover { text-decoration: underline; }
-.chat-message.user .chat-bubble h1,
-.chat-message.user .chat-bubble h2,
-.chat-message.user .chat-bubble h3,
-.chat-message.user .chat-bubble h4,
-.chat-message.user .chat-bubble strong { color: #fff; }
+/* 用户气泡为浅底，行内代码单独给底，避免与气泡同色糊在一起 */
 .chat-message.user .chat-bubble code {
-    background: rgba(255, 255, 255, .15);
-    color: #fff;
+    background: var(--ai-user-bubble-code);
 }
 
 .message-image-container {
     margin: 4px 0 8px;
     max-width: 240px;
-    border-radius: 12px;
+    border-radius: var(--ds-radius-media);
     overflow: hidden;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--ds-color-border-subtle);
 }
 .message-image { width: 100%; height: auto; display: block; cursor: zoom-in; }
 
@@ -343,7 +418,7 @@
     max-width: 92vw;
     max-height: 90vh;
     object-fit: contain;
-    border-radius: 8px;
+    border-radius: var(--ds-radius-media);
     box-shadow: 0 12px 48px rgba(0, 0, 0, .5);
     cursor: zoom-out;
 }
@@ -357,10 +432,13 @@
     border: none;
     background: rgba(255, 255, 255, .15);
     color: #fff;
-    font-size: 16px;
     cursor: pointer;
-    transition: background .15s;
-    backdrop-filter: blur(8px);
+    transition: background .2s ease;
+    backdrop-filter: blur(var(--ds-blur-glass));
+    -webkit-backdrop-filter: blur(var(--ds-blur-glass));
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .image-lightbox-close:hover { background: rgba(255, 255, 255, .3); }
 @keyframes lightboxFadeIn {
@@ -390,7 +468,7 @@
     border-radius: 50%;
 }
 .message-loading-text {
-    color: #2563EB;
+    color: var(--ds-color-brand);
     font-size: 13px;
     animation: pulseSoft 1.5s ease-in-out infinite;
 }
@@ -401,12 +479,13 @@
 
 /* 思考模式内容（DeepSeek 风格：先显示思考，再输出回答） */
 .message-thinking {
-    color: #9ca3af;
-    font-size: 12px;
+    color: var(--ds-color-text-description);
+    font-size: 13px;
     line-height: 1.7;
-    border-left: 3px solid #d1d5db;
-    padding: 6px 12px;
-    margin: 0 0 10px;
+    background: var(--ds-color-bg-surface-3);
+    border-radius: var(--ds-radius-media);
+    padding: 10px 14px;
+    margin: 0 0 12px;
     white-space: pre-wrap;
     word-break: break-word;
     max-height: 200px;
@@ -416,17 +495,16 @@
     animation: pulseSoft 1.2s ease-in-out infinite;
 }
 .message-thinking.done {
-    color: #6b7280;
-    border-left-color: #e5e7eb;
+    color: var(--ds-color-text-placeholder);
 }
 
-/* ─── 欢迎区 ─── */
+/* ─── 欢迎区（只在空状态存在，故可放心收紧尺寸给居中腾空间） ─── */
 .welcome-wrapper {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 60px 20px 40px;
+    padding: 40px 24px 24px;
     min-height: 100%;
     text-align: center;
 }
@@ -435,7 +513,7 @@
     flex-direction: column;
     align-items: center;
     gap: 12px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
 }
 .welcome-avatar {
     width: 64px;
@@ -444,64 +522,78 @@
     background-image: url('../images/douyan.png');
     background-size: cover;
     background-position: center;
-    box-shadow: 0 4px 16px rgba(37, 99, 235, .2);
+    box-shadow: 0 0 0 1px var(--ds-color-border-subtle), 0 8px 24px rgba(15, 23, 42, .1);
 }
 .welcome-avatar i { display: none; }
 .welcome-name {
-    font-size: 20px;
-    font-weight: 600;
-    color: #111827;
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: -.02em;
+    color: var(--ds-color-text-primary-bluish);
 }
 .welcome-desc {
-    color: #6b7280;
+    color: var(--ds-color-text-description);
     font-size: 14px;
-    line-height: 1.6;
-    max-width: 480px;
-    margin: 0 0 24px;
+    line-height: 1.7;
+    max-width: 460px;
+    margin: 0 0 20px;
 }
 
 .quick-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(160px, 200px));
-    gap: 10px;
-    max-width: 440px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    max-width: 560px;
     width: 100%;
 }
+/* 快捷入口改用 deepseek 的 secondary 按钮 + 胶囊形 */
 .quick-action-btn {
-    background: #f8fafc;
-    border: 1.5px solid #d1d5db;
-    border-radius: 12px;
-    padding: 12px 14px;
+    background: var(--ds-btn-secondary-bg);
+    border: 1px solid var(--ds-btn-secondary-border);
+    border-radius: var(--ds-radius-pill);
+    padding: 9px 18px;
     font-size: 13px;
     font-weight: 500;
-    color: #374151;
+    color: var(--ds-color-text-primary);
     cursor: pointer;
-    text-align: left;
-    transition: all .15s;
-}
-.quick-action-btn::before {
-    content: '💬';
-    margin-right: 6px;
-    font-size: 14px;
+    transition: border-color .35s ease, background-color .2s ease, color .2s ease;
 }
 .quick-action-btn:hover {
-    border-color: #2563EB;
-    color: #2563EB;
-    background: #eff6ff;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(37, 99, 235, .15);
+    border-color: var(--ds-btn-secondary-hover-border);
+    background: var(--ds-color-bg-overlay);
+    color: var(--ds-color-brand);
 }
 
 /* ─── 输入区 ─── */
 .ai-chat-composer {
     flex-shrink: 0;
-    background: #fff;
-    border-top: 1px solid #f0f0f0;
-    padding: 12px 20px 16px;
+    /* 底色放开，让容器色场透上来给液态玻璃输入框当"可折射的背景" */
+    background: transparent;
+    border-top: 1px solid var(--ds-color-border-subtle);
+    padding: 12px 28px 14px;
+    /* margin-bottom 参与过渡：空状态靠它把输入框顶到画面中部，
+       开始对话（欢迎区被移除）后自动收回到底部，全程平滑。
+       缓动用 (.4,0,.2,1) 而不是强 ease-out —— 后者把位移全挤在前 1/4 时长里，
+       实测 234px 的位移 140ms 就走完，观感是"弹一下"而非滑过去。 */
+    transition: margin-bottom .5s cubic-bezier(.4, 0, .2, 1),
+                border-color .45s ease;
 }
 .ai-chat-composer-inner {
-    max-width: 800px;
+    max-width: 820px;
     margin: 0 auto;
+}
+
+/* ─── 空状态：输入框上移居中，成为画面主体（deepseek 首屏的做法） ───
+   消息区因此变矮、居中的欢迎区随之轻微上移；两边都是流式布局，
+   过渡期间输入框始终在欢迎区下方，不会互相压住或裁切。 */
+.ai-chat-container:has(.welcome-wrapper) .ai-chat-composer {
+    margin-bottom: var(--ai-composer-lift);
+    border-top-color: transparent;
+}
+/* 空状态下输入框加大圆角，作为首屏视觉主体（玻璃质感见 .ai-chat-input 基础样式） */
+.ai-chat-container:has(.welcome-wrapper) .ai-chat-input {
+    border-radius: var(--ds-radius-card);
 }
 
 .ai-chat-img-preview {
@@ -509,40 +601,77 @@
     align-items: center;
     gap: 10px;
     margin-bottom: 8px;
-    padding: 6px 10px 6px 8px;
-    background: #f3f4f6;
-    border-radius: 12px;
+    padding: 6px 10px 6px 6px;
+    background: var(--ds-color-bg-surface-3);
+    border: 1px solid var(--ds-color-border-subtle);
+    border-radius: var(--ds-radius-media);
 }
 .ai-chat-img-preview[hidden] { display: none; }
 .ai-chat-img-preview img {
     width: 48px;
     height: 48px;
     object-fit: cover;
-    border-radius: 8px;
+    border-radius: var(--ds-radius-sm);
 }
 .ai-chat-img-info {
     flex: 1;
     font-size: 12px;
-    color: #6b7280;
+    color: var(--ds-color-text-description);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
+/* 液态玻璃输入框：半透明 + 模糊提饱和 + 边缘高光 + 玻璃厚度内影 + 斜向反光。
+   注意：背景是平滑蓝白渐变时，blur 本身几乎看不出变化（模糊平滑内容≈恒等变换），
+   所以"玻璃感"主要来自半透明白 + 高光边 + 厚度内影这几层；blur 只负责轻微的柔和与提色。
+   保留 backdrop-filter 是因为背景静止 → 模糊结果可被缓存，实测几乎不占开销。 */
 .ai-chat-input {
+    position: relative;
+    /* 建立层叠上下文，使下方 ::before(z-index:-1) 恰好落在
+       本元素背景之上、正文内容之下，不会盖住输入文字 */
+    isolation: isolate;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
-    border-radius: 24px;
-    padding: 6px;
-    transition: border-color .15s, background .15s, box-shadow .15s;
+    padding: 8px;
+    border-radius: var(--ds-radius-panel);
+    border: 1px solid rgba(255, 255, 255, .55);
+    /* 白度压低，让背后的色场真的透过来（玻璃是"透过+染色"，不是洗白） */
+    background: rgba(255, 255, 255, .30);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, .9),        /* 顶缘高光 */
+        inset 0 -1px 1px rgba(255, 255, 255, .5),     /* 底缘回光 */
+        inset 0 -3px 8px rgba(77, 107, 254, .10),     /* 底部厚度内影（玻璃折射出的暗调） */
+        inset 0 0 0 1px rgba(255, 255, 255, .25),     /* 玻璃厚度 */
+        0 8px 24px rgba(15, 23, 42, .10),
+        0 2px 6px rgba(15, 23, 42, .05);
+    transition: border-color .45s ease, box-shadow .45s ease, border-radius .45s ease,
+                background-color .45s ease;
+}
+/* 斜向反光：玻璃面上的高光扫过 */
+.ai-chat-input::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    border-radius: inherit;
+    background: linear-gradient(135deg,
+                rgba(255, 255, 255, .70) 0%,
+                rgba(255, 255, 255, .18) 38%,
+                transparent 60%);
 }
 .ai-chat-input:focus-within {
-    border-color: #2563EB;
-    background: #fff;
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
+    /* 聚焦时保留玻璃白边（改蓝边会把玻璃质感吃掉），只在外圈加提示环 */
+    border-color: rgba(255, 255, 255, .75);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, .95),
+        inset 0 0 0 1px rgba(255, 255, 255, .35),
+        0 0 0 3px rgba(77, 107, 254, .14),
+        0 8px 24px rgba(15, 23, 42, .10);
 }
 /* 第一行：输入框 */
 .ai-chat-input-main {
@@ -559,23 +688,21 @@
 }
 .ai-chat-attach {
     flex-shrink: 0;
-    width: 40px;
-    height: 40px;
-    border: 2px solid #d1d5db;
+    width: 36px;
+    height: 36px;
+    border: none;
     border-radius: 50%;
     cursor: pointer;
-    background: #e5e7eb;
-    color: #374151;
-    font-size: 16px;
+    background: transparent;
+    color: var(--ds-color-text-description);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background .15s, color .15s, border-color .15s;
+    transition: background .2s ease, color .2s ease;
 }
 .ai-chat-attach:hover {
-    background: #dbeafe;
-    color: #2563EB;
-    border-color: #60a5fa;
+    background: var(--ds-color-bg-hover);
+    color: var(--ds-color-brand);
 }
 .chat-input-field {
     flex: 1;
@@ -584,41 +711,39 @@
     background: transparent;
     resize: none;
     font-size: 15px;
-    line-height: 1.5;
-    color: #1f2937;
-    padding: 8px 4px;
+    line-height: 1.6;
+    color: var(--ds-color-text-primary);
+    padding: 8px 6px;
     max-height: 160px;
     min-height: 24px;
 }
-.chat-input-field::placeholder { color: #9ca3af; }
+.chat-input-field::placeholder { color: var(--ds-color-text-placeholder); }
+/* 发送按钮：deepseek 的实心品牌圆钮，无投影（扁平） */
 .ai-chat-send {
     flex-shrink: 0;
-    width: 44px;
-    height: 44px;
+    width: 36px;
+    height: 36px;
     border: none;
     border-radius: 50%;
     cursor: pointer;
-    background: #2563EB;
+    background: var(--ds-color-brand);
     color: #fff;
-    font-size: 18px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background .15s, transform .1s, box-shadow .15s;
-    box-shadow: 0 3px 12px rgba(37, 99, 235, .4);
+    transition: background .2s ease, transform .1s ease;
 }
-.ai-chat-send:hover { background: #1d4ed8; box-shadow: 0 5px 18px rgba(37, 99, 235, .5); }
-.ai-chat-send:active { transform: scale(.95); }
+.ai-chat-send:hover { background: var(--ds-color-brand-deep); }
+.ai-chat-send:active { transform: scale(.96); }
 .ai-chat-send:disabled {
-    background: #d1d5db;
-    color: #fff;
+    background: var(--ds-color-bg-surface-5);
+    color: var(--ds-color-text-placeholder);
     cursor: not-allowed;
-    box-shadow: none;
 }
 .sending-spinner {
     display: inline-block;
     animation: spin 1s linear infinite;
-    font-size: 20px;
+    font-size: 18px;
 }
 @keyframes spin {
     from { transform: rotate(0deg); }
@@ -626,9 +751,9 @@
 }
 .ai-chat-hint {
     text-align: center;
-    font-size: 11px;
-    color: #9ca3af;
-    margin-top: 8px;
+    font-size: 12px;
+    color: var(--ds-color-text-placeholder);
+    margin-top: 10px;
 }
 
 /* ─── Lucide 图标尺寸（按钮内 SVG） ─── */
@@ -638,8 +763,8 @@
 .ai-chat-send svg,
 .ai-chat-img-remove svg,
 .image-lightbox-close svg {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
 }
 .chat-avatar svg {
     width: 16px;
@@ -648,13 +773,13 @@
 
 /* ─── 错误提示 ─── */
 .error-message {
-    max-width: 800px;
+    max-width: 820px;
     margin: 0 auto;
-    background: #fef2f2;
-    border: 1px solid #fecaca;
+    background: rgba(220, 38, 38, .06);
+    border: 1px solid rgba(220, 38, 38, .18);
     color: #b91c1c;
-    padding: 8px 14px;
-    border-radius: 8px;
+    padding: 10px 14px;
+    border-radius: var(--ds-radius-media);
     font-size: 13px;
     animation: shake .3s ease;
 }
@@ -666,36 +791,78 @@
 
 /* ─── 动画 ─── */
 @keyframes bubblePop {
-    0% { opacity: 0; transform: scale(.92); }
-    60% { opacity: 1; }
-    80% { transform: scale(1.02); }
+    0% { opacity: 0; transform: scale(.96); }
     100% { opacity: 1; transform: scale(1); }
 }
 @keyframes messageFadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
 }
-@keyframes pulse {
-    0% { box-shadow: 0 6px 24px rgba(37, 99, 235, .35); }
-    50% {
-        box-shadow: 0 6px 24px rgba(37, 99, 235, .6),
-                    0 0 0 8px rgba(37, 99, 235, .12);
-    }
-    100% { box-shadow: 0 6px 24px rgba(37, 99, 235, .35); }
+/* 悬浮按钮呼吸闪烁：两圈错相扩散的细环，让 AI 助手在官网里更显眼。
+   只在 .pulse 状态存在（无 content 时伪元素根本不生成 → 静止态零开销）；
+   由 ai-chat.js 在加载 2s 后加 .pulse、打开聊天时移除。
+   ⚠️ 只动 transform / opacity（合成器属性）；
+   旧实现是动画 box-shadow —— 那是逐帧重绘，已换掉。 */
+.ai-chat-float-btn.pulse {
+    /* 静态外发光让按钮从页面里"跳"出来；发光不参与动画正是为了避开逐帧重绘 */
+    box-shadow: 0 0 0 1px var(--ds-color-border-subtle),
+                0 8px 24px rgba(15, 23, 42, .16),
+                0 0 20px rgba(77, 107, 254, .38);
 }
-.ai-chat-float-btn.pulse { animation: pulse 2s infinite; }
+.ai-chat-float-btn.pulse::before,
+.ai-chat-float-btn.pulse::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    border: 2px solid rgba(77, 107, 254, .55);
+    pointer-events: none;
+    animation: aiFloatBreath 2.6s ease-out infinite;
+}
+/* 负延迟让两环一开始就错相运行；用正延迟的话，首次延迟期间该伪元素会以
+   "基础状态"（无 transform、opacity 1）渲染成一条静止的环，是个可见瑕疵 */
+.ai-chat-float-btn.pulse::after { animation-delay: -1.3s; }
+
+@keyframes aiFloatBreath {
+    0%   { transform: scale(.9); opacity: 0; }
+    15%  { opacity: .9; }
+    70%  { opacity: .22; }
+    100% { transform: scale(1.5); opacity: 0; }
+}
 
 /* ─── 响应式 ─── */
 @media (max-width: 768px) {
+    /* 窄屏欢迎区因为文字换行会更高，上移量再收一档（实测 844/667 高度均无裁切） */
+    :root { --ai-composer-lift: max(0px, min(17vh, calc(min(810px, 88vh) - 600px))); }
     .ai-chat-header { padding: 10px 12px; }
-    .chat-message { padding: 12px 14px; }
-    .ai-chat-composer { padding: 10px 12px 12px; }
-    .quick-actions { grid-template-columns: 1fr 1fr; }
+    .chat-message { padding: 12px 16px; gap: 10px; }
+    .ai-chat-composer { padding: 10px 16px 12px; }
 }
 @media (max-width: 480px) {
     .welcome-wrapper { padding: 40px 16px 24px; }
     .welcome-avatar { width: 56px; height: 56px; }
-    .quick-actions { grid-template-columns: 1fr; }
     .ai-chat-actions { gap: 4px; }
-    .ai-chat-model-select { font-size: 11px; padding: 4px 6px; }
+    .ai-chat-model-select { font-size: 11px; padding: 4px 8px; }
+    .chat-message.user .chat-bubble { max-width: 88%; }
+}
+
+/* ─── 降级动效 ─── */
+@media (prefers-reduced-motion: reduce) {
+    .ai-chat-float-btn,
+    .ai-chat-container,
+    .ai-chat-overlay,
+    .ai-chat-composer,
+    .ai-chat-input,
+    .chat-message.user,
+    .chat-message.assistant,
+    .message-loading-text,
+    .message-thinking:not(.done),
+    .error-message {
+        animation: none !important;
+        transition: none !important;
+    }
+    .ai-chat-float-btn.pulse { animation: none !important; }
+    /* 呼吸环也关掉；外发光保留（它是"看得见"的辅助，不属于动效） */
+    .ai-chat-float-btn.pulse::before,
+    .ai-chat-float-btn.pulse::after { animation: none !important; }
 }
