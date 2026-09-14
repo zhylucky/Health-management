@@ -55,9 +55,11 @@
     
     // 关键资源预加载
     function preloadCriticalResources() {
+        // 路径相对站点根：本脚本只被根目录的 index.html 引用，
+        // 原先写成 '../images/...' 会解析到仓库之外的 /images/，属无效预加载（线上白跑一次请求）
         const criticalImages = [
-            '../images/dzlogo.png',
-            '../images/health-pro-qr.png'
+            'images/dzlogo.png',
+            'images/health-pro-qr.png'
         ];
         
         criticalImages.forEach(src => {

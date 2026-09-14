@@ -378,6 +378,30 @@
     border-top: 1px solid var(--ds-color-border-divider);
     margin: 14px 0;
 }
+/* 表格：模型偶尔会输出 markdown 表格（通用模式尤其），此处给真表格配上可读样式；
+   display:block + overflow-x 让宽表在窄屏可以横向滚动，而不是把气泡撑破 */
+.chat-bubble table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 14px;
+}
+.chat-bubble th,
+.chat-bubble td {
+    border: 1px solid var(--ds-color-border-subtle);
+    padding: 7px 10px;
+    text-align: left;
+    vertical-align: top;
+    line-height: 1.6;
+}
+.chat-bubble th {
+    background: var(--ds-color-bg-surface-3);
+    font-weight: 500;
+    color: var(--ds-color-text-primary);
+    white-space: nowrap;
+}
 
 /* ─── 流式输出：分块增量渲染的顺滑优化 ─── */
 /* contain 把 .message-text 的内部重排隔离在本块内，每帧更新不会引起整页 reflow 抖动 */
@@ -749,11 +773,22 @@
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
 }
+/* 注意：.ai-chat-hint 目前是死样式 —— 对应的提示行已从 ai-chat.js 模板里移除，此处保留未删 */
 .ai-chat-hint {
     text-align: center;
     font-size: 12px;
     color: var(--ds-color-text-placeholder);
     margin-top: 10px;
+}
+/* AI 生成内容免责提示：常驻输入框下方（11px 小字，但要保证可读）
+   ⚠️ 别用 --ds-color-text-placeholder（#8691a1）+ 半透明：实测在蓝白底上对比度只有 2.23:1，
+   作为医疗免责声明过淡、等于没写；改用 description 灰实测约 6.5:1（仍明显弱于正文 #1e232c）。 */
+.ai-chat-disclaimer {
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--ds-color-text-description);
+    margin-top: 8px;
 }
 
 /* ─── Lucide 图标尺寸（按钮内 SVG） ─── */

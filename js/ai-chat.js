@@ -310,6 +310,7 @@ class AIChatWidget {
                             </button>
                         </div>
                     </div>
+                    <div class="ai-chat-disclaimer">内容由 AI 生成，请仔细甄别，不作为医疗诊断依据</div>
                 </div>
             </div>
         `;
@@ -1116,6 +1117,12 @@ class AIChatWidget {
         if (!content) return '';
         let text = content;
 
+        // 0. 剥掉 markdown 引用块标记（行首 ">"）
+        //    本渲染器不支持引用块：第 1 步会把 ">" 转义成 "&gt;" 并原样显示，界面上就多出一个可见符号。
+        //    来源有两条：kb.md 有 42 行正文写成引用块（注入层已归一化），以及模型自己用引用块做强调。
+        //    ⚠️ 必须在第 1 步转义之前做，否则要匹配的是 "&gt;" 而不是 ">"。
+        text = text.replace(/^[ \t]*>[ \t]?/gm, '');
+
         // 1. 转义 HTML 特殊字符
         //    引号必须一起转义：链接的 URL 会被拼进 <a href="..."> 属性，
         //    只转 & < > 时，`[x](" onmouseover="alert(1))` 能闭合 href 并注入事件处理器
@@ -1154,13 +1161,27 @@ class AIChatWidget {
             return `${prefix}<ol>${items.map(i => `<li>${i}</li>`).join('')}</ol>`;
         });
 
-        // 8. 加粗
+        // 8. 表格（markdown）：本渲染器原本不支持，会显示成一竖排 "|"，这里转成真表格。
+        //    仅当连续 ≥2 行都以 "|" 开头结尾、且第 2 行是分隔行（|---|）时才认定是表格，
+        //    否则原样返回，避免把普通含 "|" 的文本误判。
+        text = text.replace(/(^|\n)((?:\|[^\n]*\|[ \t]*(?:\n|$)){2,})/g, (m, prefix, block) => {
+            const rows = block.trim().split('\n').map(r => r.trim()).filter(Boolean);
+            if (rows.length < 2 || !/^\|[\s:\-|]+\|$/.test(rows[1])) return m;
+            const cells = r => r.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+            const head = cells(rows[0]);
+            const body = rows.slice(2).map(cells);
+            const th = head.map(c => `<th>${c}</th>`).join('');
+            const trs = body.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('');
+            return `${prefix}<table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
+        });
+
+        // 9. 加粗
         text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
 
-        // 9. 斜体（无 lookbehind，兼容所有浏览器）
+        // 10. 斜体（无 lookbehind，兼容所有浏览器）
         text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
 
-        // 10. 链接：仅放行 http/https 与站内相对路径/锚点；javascript:、data:、vbscript:
+        // 11. 链接：仅放行 http/https 与站内相对路径/锚点；javascript:、data:、vbscript:
         //     等协议不生成 <a>，退化为原文显示，避免点击执行脚本。
         //     双引号已在第 1 步转义为 &quot;，属性闭合路径已被堵死，此处再收一层协议白名单。
         //     `\/(?!\/)` 排除 `//host` 协议相对 URL（会跳到外站），只放行单斜杠站内路径。
@@ -1170,12 +1191,12 @@ class AIChatWidget {
             return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
         });
 
-        // 11. 段落：空行分段，单换行换 <br>
+        // 12. 段落：空行分段，单换行换 <br>
         const blocks = text.split(/\n{2,}/);
         text = blocks.map(b => {
             const trimmed = b.trim();
             if (!trimmed) return '';
-            if (/^<(h[1-6]|ul|ol|hr|pre|div)/.test(trimmed)) return b;
+            if (/^<(h[1-6]|ul|ol|hr|pre|div|table)/.test(trimmed)) return b;
             return `<p>${b.replace(/\n/g, '<br>')}</p>`;
         }).join('');
 

@@ -29,9 +29,19 @@ const MAX_BODY_BYTES = MAX_IMAGE_CHARS + 64 * 1024;
 
 async function loadKnowledgeBase(request) {
   if (KNOWLEDGE_BASE_CACHE) return KNOWLEDGE_BASE_CACHE;
+  const url = new URL('/Markdown/kb.md', request.url).toString();
   try {
-    const url = new URL('/Markdown/kb.md', request.url);
-    const resp = await fetch(url.toString(), { cache: 'no-store' });
+    // cache:'no-store' 用于绕过边缘缓存。但本地 `wrangler pages dev`（miniflare）
+    // **不实现 fetch 的 cache 字段**，会直接抛 "The 'cache' field on 'RequestInitializerDict'
+    // is not implemented."，使本地 KB 永远加载失败 → 所有请求都被判为"未命中"、
+    // 整段换成 GENERAL_SYSTEM_PROMPT 并用 8B，本地就完全测不了 KB 模式。
+    // 故失败后退化为不带该字段再取一次（生产走第一条分支，行为不变）。
+    let resp;
+    try {
+      resp = await fetch(url, { cache: 'no-store' });
+    } catch {
+      resp = await fetch(url);
+    }
     if (resp.ok) {
       KNOWLEDGE_BASE_CACHE = await resp.text();
       return KNOWLEDGE_BASE_CACHE;

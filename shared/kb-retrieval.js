@@ -19,6 +19,8 @@ const KB_CONFIG_DEFAULTS = {
 const GENERAL_SYSTEM_PROMPT = `你是"豆眼儿"，一位友好、专业的AI健康助手，同时也是一个乐于助人的通用AI助手。你可以回答健康、产品、生活、常识、知识、创意等各类问题。
 
 # 回答原则
+- 正文一律用**简体中文**：不要输出英文句子或段落（产品型号、单位、URL 等专有写法例外）。
+  用户用其他语言提问时，才用对应语言回答
 - 根据问题的性质自然回答：简单问题简短回答，复杂或开放式问题请给出完整、详细的回答，不要刻意压缩内容
 - 回答友好、专业、条理清晰，需要时可用列表或分点
 - 不需要刻意提及"知识库"或"请联系客服"
@@ -272,7 +274,7 @@ function buildDisclaimer(chunks, hits) {
   const already = hits.some(h => h.chunk.title.includes('16.3'));
   if (already) return '';
   const c = chunks.find(x => DISCLAIMER_TITLE_RE.test(x.title));
-  return c ? `【来源：${c.title}】\n${c.text.trim()}\n` : '';
+  return c ? `【来源：${c.title}】\n${normalizeForInjection(c.text)}\n` : '';
 }
 
 /** 检索：对全部块打分取 top-K，分数 ≥ minScore */
@@ -293,11 +295,28 @@ function retrieve(query, chunks, cfg) {
     .filter(s => s.score >= c.minScore);
 }
 
+/**
+ * 注入前的文本归一化：剥掉行首的 markdown 引用标记（>）。
+ *
+ * 为什么要做：kb.md 里有 42 行正文写成引用块（文档版本、易混点、以及**第十六章 16.3 免责声明**），
+ * 这些原文注入后模型会「照抄源格式」，把免责声明也输出成 `> **重要提示**：…`；
+ * 而前端 formatContent 不支持引用块（只做转义 + 段落），界面上就会多出一个可见的 ">" 符号。
+ * 实测在 system prompt 里禁止引用块语法**无效** —— 模型是在模仿注入内容的格式，不是在自创。
+ *
+ * 只在「注入边界」调用，**不改 chunk.text**：检索打分仍基于原文，检索行为零影响。
+ */
+function normalizeForInjection(text) {
+  return String(text || '')
+    .replace(/^[ \t]*>[ \t]?/gm, '')  // 行首引用标记（含只有 ">" 的空引用行）
+    .replace(/\n{3,}/g, '\n\n')       // 折叠剥掉引用块后留下的连续空行
+    .trim();
+}
+
 /** 生成注入段（带【来源】标注 + 使用说明 + 常驻免责声明）；hits 为空时返回空串 */
 function buildInjection(hits, disclaimer) {
   if (!hits || hits.length === 0) return '';
   const parts = hits.map(({ chunk }) =>
-    `【来源：${chunk.title}】\n${chunk.text.trim()}\n`
+    `【来源：${chunk.title}】\n${normalizeForInjection(chunk.text)}\n`
   );
   if (disclaimer) parts.push(disclaimer);
   return (
