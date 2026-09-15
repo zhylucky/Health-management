@@ -124,15 +124,15 @@ function testTrim() {
 // ═══ 3. /api/chat 处理器：上限防护 / 识图历史 / 重试策略 ═══
 async function testChatHandler() {
   console.log('\n═══ 3. /api/chat 处理器行为 ═══');
-  const { onRequestPost, __resetUpstreamHealth } = await import(
+  const { onRequestPost, __resetUpstreamHealth, __resetKnowledgeBaseCache } = await import(
     'file://' + path.join(ROOT, 'functions', 'api', 'chat.js').replace(/\\/g, '/')
   );
 
   const env = { SILICONFLOW_API_KEY: 'sk-test-not-real' };
   const mkReq = (body) => ({ json: async () => body, url: 'https://health.bbroot.com/api/chat' });
   let captured = null;
-  const okJson = () => new Response(
-    JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+  const okJson = (content = 'ok') => new Response(
+    JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] }),
     { status: 200, headers: { 'Content-Type': 'application/json' } }
   );
 
@@ -361,37 +361,144 @@ async function testChatHandler() {
     __resetUpstreamHealth();
   }
 
-  // ═══ 识图不得悄悄切到收费模型：默认无备用，只有显式配置 IMAGE_FALLBACK_MODEL 才切换 ═══
+  // ═══ 识图兜底链：默认**全部是 0 费用模型**，且不得悄悄切到收费 VLM ═══
+  // 2026-09-15 定策：免费档里没有第二个能"看图回答"的通用 VLM（`Qwen/Qwen3-8B` 的视觉标签是错的，
+  // 发图回 400 `The model is not a VLM`；VL-8B / VL-30B 分别 ¥2/M、¥2.8/M 属收费），所以兜底只能
+  // 挂 OCR 模型。**方案 B**：OCR 只当"读图的替身"，抠出的文字再交给免费文本模型生成回答，
+  // 用户看到的是回答而不是一屏原文（见下面 answerFromOcrText 相关断言）。
   {
     __resetUpstreamHealth();
-    let calls = 0;
-    globalThis.fetch = async () => { calls++; return errRes(503); };
-    const res = await onRequestPost({
-      request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, messages: [{ role: 'user', content: 'x' }] }),
-      env
-    });
-    check('识图默认不自动切换（1 次上游调用，避免产生费用）',
-      res.status === 500 && calls === 1, `(状态 ${res.status}, 上游 ${calls} 次)`);
-
-    __resetUpstreamHealth();
     const seen = [];
+    const bodies = [];
+    // 带两轮历史，用于验证"兜底到 OCR 模型时不带历史"
+    const imgReq = {
+      image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true,
+      messages: [
+        { role: 'user', content: '前文提问' },
+        { role: 'assistant', content: '前文回答' },
+        { role: 'user', content: '看看这张图' }
+      ]
+    };
     globalThis.fetch = async (url, opts) => {
       const b = JSON.parse(opts.body);
-      seen.push(b.model);
-      return seen.length === 1 ? errRes(503) : okJson();
+      seen.push(b.model); bodies.push(b);
+      return errRes(503);
+    };
+    const res = await onRequestPost({ request: mkReq(imgReq), env });
+    check('识图默认兜底链是 4B → DeepSeek-OCR → PaddleOCR-VL（全部 0 费用）',
+      seen.length === 3 && seen[0] === 'Qwen/Qwen3.5-4B' &&
+      seen[1] === 'deepseek-ai/DeepSeek-OCR' && seen[2] === 'PaddlePaddle/PaddleOCR-VL-1.5',
+      `(依次 ${seen.join(' → ')})`);
+    // ⚠️ 别用 /-VL-/ 当判据：OCR 模型自己也叫 `PaddleOCR-VL-1.5`，会误伤。
+    // 收费的是 Qwen3-VL-*（¥2/M、¥2.8/M）与 GLM-4.xV（¥1/M）。
+    check('识图默认链里不含任何收费 VLM（Qwen3-VL-* / GLM-4.xV）',
+      !seen.some(m => /Qwen3-VL|GLM-4\.\dV/i.test(m)), `(${seen.join(', ')})`);
+    check('识图全部候选失败 → 500（不是无限悬挂）', res.status === 500, `(状态 ${res.status})`);
+
+    const textOf = (b) => b.messages[b.messages.length - 1].content.find(c => c.type === 'text').text;
+    check('识图主模型（4B，非 OCR）保留用户提问与历史',
+      textOf(bodies[0]) === '看看这张图' && bodies[0].messages.length === 3,
+      `(prompt=${JSON.stringify(textOf(bodies[0]))}, messages=${bodies[0].messages.length})`);
+    // 实测：DeepSeek-OCR 收到自然语言提问返回空 content；带英文前缀的中文提示也返回空
+    // （原 OCR 模式默认提示词 'OCR this image. …' 正好踩这个坑）
+    check('兜底到 DeepSeek-OCR 时换成官方提示词 <image>\\nFree OCR.',
+      textOf(bodies[1]) === '<image>\nFree OCR.', `(${JSON.stringify(textOf(bodies[1]))})`);
+    check('兜底到 PaddleOCR-VL 时用它的官方提示词 OCR:',
+      textOf(bodies[2]) === 'OCR:', `(${JSON.stringify(textOf(bodies[2]))})`);
+    check('兜底到 OCR 模型时丢掉对话历史（messages 只剩当前这条）',
+      bodies[1].messages.length === 1 && bodies[2].messages.length === 1,
+      `(OCR messages=${bodies[1].messages.length}/${bodies[2].messages.length})`);
+    check('OCR 兜底模型不携带 enable_thinking（VL/OCR 收到会被 400）',
+      bodies[1].enable_thinking === undefined && bodies[1].enable_search === undefined &&
+      bodies[2].enable_thinking === undefined && bodies[2].enable_search === undefined,
+      `(enable_thinking=${bodies[1].enable_thinking}/${bodies[2].enable_thinking})`);
+    __resetUpstreamHealth();
+
+    // 显式配置 IMAGE_FALLBACK_MODEL 时**覆盖**默认链（单值写法与旧版兼容），
+    // 且 OCR 成功后要接文本模型作答（方案 B）——所以是 3 次调用：4B → OCR → 文本模型。
+    __resetUpstreamHealth();
+    const seen2 = [];
+    const bodies2 = [];
+    globalThis.fetch = async (url, opts) => {
+      const b = JSON.parse(opts.body);
+      seen2.push(b.model); bodies2.push(b);
+      // 图片段（content 是数组）返回抠出来的文字；文本段返回回答
+      const isImageStage = Array.isArray(b.messages[0].content);
+      return seen2.length === 1 ? errRes(503) : okJson(isImageStage ? '余额 ¥0.9830' : '这段文字说的是账户余额。');
     };
     const res2 = await onRequestPost({
-      request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, messages: [{ role: 'user', content: 'x' }] }),
-      env: { ...env, IMAGE_FALLBACK_MODEL: 'Qwen/Qwen3-VL-8B-Instruct' }
+      request: mkReq(imgReq),
+      env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' }
     });
-    check('显式配置 IMAGE_FALLBACK_MODEL 后才切换',
-      res2.status === 200 && seen.length === 2 &&
-      seen[0] === 'Qwen/Qwen3.5-4B' && seen[1] === 'Qwen/Qwen3-VL-8B-Instruct',
-      `(状态 ${res2.status}, 依次 ${seen.join(' → ')})`);
+    check('显式配置 IMAGE_FALLBACK_MODEL 覆盖默认链，OCR 成功后接文本模型作答（方案 B）',
+      res2.status === 200 && seen2.length === 3 &&
+      seen2[0] === 'Qwen/Qwen3.5-4B' && seen2[1] === 'deepseek-ai/DeepSeek-OCR' &&
+      seen2[2] === 'Qwen/Qwen3-8B',
+      `(状态 ${res2.status}, 依次 ${seen2.join(' → ')})`);
+    const stage2 = bodies2[2];
+    const stage2User = stage2.messages[stage2.messages.length - 1];
+    check('第二段：system 打头 + 保留对话历史 + 用户问题在 prompt 里',
+      stage2.messages[0].role === 'system' && stage2.messages.length === 4 &&
+      stage2User.role === 'user' && stage2User.content.includes('余额 ¥0.9830') &&
+      stage2User.content.includes('看看这张图'),
+      `(messages=${stage2.messages.length})`);
+    check('第二段：OCR 文字用 【】 标注来源，避免模型当成自己的知识',
+      /【[^】]*文字[^】]*】/.test(stage2User.content),
+      `(${stage2User.content.slice(0, 24)}…)`);
+    check('第二段：跳过刚挂掉的主模型，直接 8B 起步',
+      !seen2.slice(2).includes('Qwen/Qwen3.5-4B'), `(${seen2.slice(2).join(', ')})`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 方案 B 的分流：OCR 模式"只提字"不过 LLM，"要加工"才过 ═══
+  // 过一遍 LLM 有改写数字、丢掉整行的风险，医疗资料上不能忍；而"整理成表格"这类要求
+  // OCR 模型根本执行不了（实测追加要求会让它死循环），只能交给文本模型。
+  {
+    const ocrReq = (content) => ({
+      image: 'data:image/png;base64,AAAA', imageMode: 'ocr', stream: true,
+      messages: [{ role: 'user', content }]
+    });
+    const setup = (ocrText) => {
+      __resetUpstreamHealth();
+      const seen = [];
+      globalThis.fetch = async (url, opts) => {
+        const b = JSON.parse(opts.body);
+        seen.push(b.model);
+        // 图片段（content 是数组）返回抠出来的文字；文本段返回整理结果
+        return okJson(Array.isArray(b.messages[0].content) ? ocrText : '整理后的结果');
+      };
+      return seen;
+    };
+
+    // 注意：OCR 模式的主模型本身就是 OCR_MODEL(=DeepSeek-OCR)，与兜底链首个去重后只剩一个 OCR 候选，
+    // 所以"纯提取"只有 1 次上游调用、"要加工"是 2 次（OCR + 文本模型）。
+    let seen = setup('余额 0.9830');
+    const r1 = await onRequestPost({ request: mkReq(ocrReq('帮我提取这张图里的文字')), env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' } });
+    const j1 = await r1.json();
+    check('OCR 模式·纯提取：直接返回 OCR 原文，不调用任何 LLM',
+      r1.status === 200 && seen.length === 1 && j1.choices[0].message.content === '余额 0.9830',
+      `(上游 ${seen.length} 次, 正文 ${JSON.stringify(j1.choices[0].message.content)})`);
+
+    seen = setup('余额 0.9830');
+    const r2 = await onRequestPost({ request: mkReq(ocrReq('把这张图整理成表格')), env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' } });
+    check('OCR 模式·要求加工：交给文本模型处理（这解决了"用户原话被官方提示词顶掉"）',
+      r2.status === 200 && seen.length === 2 && seen[1] === 'Qwen/Qwen3-8B',
+      `(上游 ${seen.length} 次, 依次 ${seen.join(' → ')})`);
+
+    seen = setup('');
+    const r3 = await onRequestPost({ request: mkReq(ocrReq('帮我提取这张图里的文字')), env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' } });
+    const j3 = await r3.json();
+    check('OCR 抠不出字：如实提示，不拿空文本去问模型',
+      r3.status === 200 && seen.length === 1 && /识别返回为空/.test(j3.choices[0].message.content),
+      `(上游 ${seen.length} 次)`);
     __resetUpstreamHealth();
   }
 
   // ═══ 识图路径必须也有超时：以前是裸 fetch，上游挂起会一直悬着 ═══
+  // 识图默认是 3 候选链，超时**按候选类型**取：VLM 流式等首字节 5s（IMAGE_FIRST_BYTE_MS），
+  // 两个 OCR 兜底是非流式、等整段生成 12s（IMAGE_OCR_TIMEOUT_MS）→ 最坏 ≈ 29s。
+  // 这个上界必须留在前端 `config/ai-chat-config.js` 的 timeouts.firstByteMs(35s) 之内 ——
+  // 往链里再加候选就会越界，本断言会立刻失败，逼你同步调前端预算。
   {
     __resetUpstreamHealth();
     globalThis.fetch = (url, opts) => new Promise((_, reject) => {
@@ -407,9 +514,107 @@ async function testChatHandler() {
       env
     });
     const dt = Date.now() - t0;
-    check('识图上游挂起 → 10s 内返回错误（不再无限悬挂）',
-      res.status === 500 && dt >= 9000 && dt < 14000,
+    check('识图上游全挂 → 在「5s + 12s + 12s = 29s」预算内返回错误（且 ≤ 前端 35s）',
+      res.status === 500 && dt >= 28000 && dt < 33000,
       `(状态 ${res.status}, 耗时 ${dt}ms)`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 第二段（文本模型）全挂时不得丢掉已经抠到的文字 ═══
+  // "有输出好过报错"：OCR 已经成功拿到文字，文本模型挂了也应该把文字交给用户，而不是回 500。
+  {
+    __resetUpstreamHealth();
+    globalThis.fetch = async (url, opts) => {
+      const b = JSON.parse(opts.body);
+      if (b.model === 'Qwen/Qwen3.5-4B') return errRes(503);
+      if (Array.isArray(b.messages[0].content)) return okJson('余额 0.9830');  // OCR 段成功
+      return errRes(503);                                                     // 文本段全挂
+    };
+    const res = await onRequestPost({
+      request: mkReq({
+        image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true,
+        messages: [{ role: 'user', content: '这张图里有什么？' }]
+      }),
+      env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' }
+    });
+    const j = await res.json();
+    check('第二段全挂 → 退回 OCR 原文（不是 500）',
+      res.status === 200 && j.choices[0].message.content === '余额 0.9830',
+      `(状态 ${res.status}, 正文 ${JSON.stringify(j.choices?.[0]?.message?.content)})`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 识图降级后也要走知识库检索 ═══
+  // 用户发一张 App 报错截图问"这个怎么解决"，答案就在 kb.md 里；不检索只能让 8B 凭常识瞎猜。
+  // ⚠️ 本块必须放在**最后**：知识库是模块级缓存（KNOWLEDGE_BASE_CACHE），一旦加载就会影响后续用例。
+  {
+    __resetUpstreamHealth();
+    __resetKnowledgeBaseCache();
+    const KB_FIXTURE = [
+      '# 测试知识库',
+      '',
+      '## 99. 设备绑定失败排查',
+      '错误码 E204 表示设备绑定失败。处理办法：先在 App 里解绑设备，再重新绑定；若仍失败，重启蓝牙后重试。',
+      ''
+    ].join('\n');
+    const stage2Bodies = [];
+    globalThis.fetch = async (url, opts) => {
+      const u = typeof url === 'string' ? url : String(url && url.url);
+      if (u.includes('Markdown/kb.md')) return new Response(KB_FIXTURE, { status: 200 });
+      const b = JSON.parse(opts.body);
+      if (b.model === 'Qwen/Qwen3.5-4B') return errRes(503);            // 主 VLM 挂掉 → 走兜底
+      if (Array.isArray(b.messages[0].content)) return okJson('错误码 E204 设备绑定失败'); // OCR 段
+      stage2Bodies.push(b);                                            // 第二段：文本模型
+      return okJson('请先在 App 里解绑设备再重新绑定。');
+    };
+    const res = await onRequestPost({
+      request: mkReq({
+        image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, injectKnowledge: true,
+        messages: [{ role: 'system', content: '你是健康助手' }, { role: 'user', content: '这个怎么解决？' }]
+      }),
+      env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' }
+    });
+    const sys = stage2Bodies.length ? stage2Bodies[0].messages[0].content : '';
+    check('识图兜底后命中知识库：片段注入进了第二段的 system',
+      res.status === 200 && stage2Bodies.length === 1 &&
+      sys.includes('99. 设备绑定失败排查') && sys.includes('解绑设备'),
+      `(状态 ${res.status}, system ${sys.length} 字)`);
+    check('检索 query 用「用户原话 + OCR 文字」合成（两样都在）',
+      stage2Bodies.length === 1 &&
+      stage2Bodies[0].messages[1].content.includes('这个怎么解决') &&
+      stage2Bodies[0].messages[1].content.includes('E204'),
+      '');
+    check('知识库注入带上了使用说明（防止编造型号/参数）',
+      sys.includes('--- 使用说明 ---'), '');
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 识图降级不得改写业务规则：injectKnowledge=false 时不许检索 ═══
+  // 前端「自动续写」刻意发 false（避免拿"请从中断处继续"去检索污染上下文），识图路径同样要守。
+  {
+    __resetUpstreamHealth();
+    __resetKnowledgeBaseCache();   // 清掉缓存，下面 kbFetched 才是有意义的计数
+    let kbFetched = 0;
+    let stage2Body = null;
+    globalThis.fetch = async (url, opts) => {
+      const u = typeof url === 'string' ? url : String(url && url.url);
+      if (u.includes('Markdown/kb.md')) { kbFetched++; return new Response('# 测试知识库\n\n## 1. 标题\n内容', { status: 200 }); }
+      const b = JSON.parse(opts.body);
+      if (b.model === 'Qwen/Qwen3.5-4B') return errRes(503);
+      if (Array.isArray(b.messages[0].content)) return okJson('错误码 E204 设备绑定失败');
+      stage2Body = b;
+      return okJson('回答');
+    };
+    await onRequestPost({
+      request: mkReq({
+        image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, injectKnowledge: false,
+        messages: [{ role: 'user', content: '这个怎么解决？' }]
+      }),
+      env: { ...env, IMAGE_FALLBACK_MODEL: 'deepseek-ai/DeepSeek-OCR' }
+    });
+    check('injectKnowledge=false → 识图第二段不检索知识库',
+      kbFetched === 0 && stage2Body && !stage2Body.messages[0].content.includes('使用说明'),
+      `(kb.md 请求 ${kbFetched} 次)`);
     __resetUpstreamHealth();
   }
 }
@@ -429,6 +634,8 @@ function testBackendParity() {
     'PRIMARY_FIRST_BYTE_MS', 'FALLBACK_FIRST_BYTE_MS', 'IMAGE_FIRST_BYTE_MS',
     'NON_STREAM_TIMEOUT_MS', 'MODEL_FAIL_THRESHOLD', 'MODEL_COOLDOWN_MS',
     'FALLBACK_MODEL_DEFAULT', 'IMAGE_MODEL_DEFAULT',
+    'IMAGE_FALLBACK_MODELS_DEFAULT', 'IMAGE_FALLBACK_PROMPTS', 'OCR_PROCESS_HINT_RE',
+    'OCR_TEXT_MAX_CHARS', 'OCR_ANSWER_SYSTEM', 'OCR_TIDY_SYSTEM', 'IMAGE_OCR_TIMEOUT_MS',
     'SECOND_FALLBACK_MODEL_DEFAULT', 'SECOND_FALLBACK_FIRST_BYTE_MS'];
   const bad = [];
   for (const n of names) {

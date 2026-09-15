@@ -58,7 +58,17 @@ const PRIMARY_FIRST_BYTE_MS = 3500;
 // 备用模型：宁可多等，也不要两个候选都白等。
 const FALLBACK_FIRST_BYTE_MS = 15000;
 // 识图：要算上图片上传时间，给比文本探针更宽的值。
-const IMAGE_FIRST_BYTE_MS = 10000;
+// 2026-09-15 实测（DeepSeek-OCR，stream 首字节）：33KB→172~373ms、160KB→474ms、
+// 0.4MB body→373ms、**4.29MB PNG（base64 5.73M 字符，接近 8M 上限）→1.22~1.43s**；
+// 健康 4B 首字节 0.4~1.0s。原来取 10s（≈7~25 倍健康延迟）过宽：4B 挂起时每个请求都要白等
+// 这么久才降级，而最坏预算还是「候选数 × 该值」。现收紧到 5s——对最大图仍有 3.5 倍余量。
+const IMAGE_FIRST_BYTE_MS = 5000;
+// OCR 候选**一律非流式**（见 imageBodyFor），此时"首字节"实际等于"整段生成完"，所以**不能**
+// 沿用上面那个 5s。实测整段生成：160KB 全页表格 2.5s、4.29MB 大图 2.0~2.4s、PaddleOCR-VL
+// 在密集页面上 3.3s → 取 12s（约 3~6 倍余量）。
+// 预算：识图链最坏 = 5（VLM 探针）+ 12 + 12 = **29s** < 前端 firstByteMs(35s)。
+// ⚠️ 加候选或改这个值，必须同步核对前端 `config/ai-chat-config.js` 的 timeouts.firstByteMs。
+const IMAGE_OCR_TIMEOUT_MS = 12000;
 // 非流式：上游要等**完整生成结束**才发响应头，故"首字节"实际等于"生成完成"，放宽到 60s。
 // **生产请用流式**：config.stream 默认 true。
 const NON_STREAM_TIMEOUT_MS = 60000;
@@ -78,6 +88,50 @@ const SECOND_FALLBACK_FIRST_BYTE_MS = 8000;
 // 需要稳定识图，请在环境变量里显式指定一个 VLM（例如 Qwen/Qwen3-VL-8B-Instruct，
 // 实测 200、首内容 728ms、答案正确，但**很可能收费**，请自行在模型广场确认计费）。
 const IMAGE_MODEL_DEFAULT = 'Qwen/Qwen3.5-4B';
+
+// 识图/OCR 兜底链（**全部是 0 费用模型**）：主模型挂起或超时后依次尝试。
+// 为什么兜底只能是 OCR 类模型：2026-09-15 实测扒过官方价格页数据，全部 ¥0 模型共 19 个，其中带
+// 「视觉输入」标签的只有 `Qwen/Qwen3.5-4B`、`Qwen/Qwen3-8B`、`Kwai-Kolors/Kolors`（文生图）——
+// 而 8B 的标签是错的（发图 400 `The model is not a VLM`），所以**免费档里没有第二个能"看图回答"
+// 的通用 VLM**。剩下的免费视觉模型只有 OCR 类，它们不回答提问、只把图里的文字提出来。
+// 对"用户发截图问问题"来说，拿到文字远好过拿到"识图失败"。
+// 顺序按实测质量排：`deepseek-ai/DeepSeek-OCR` 在 160KB 全页表格截图上 2032ms 完整读出（连
+// `0.0840 / ¥0.0001` 都对），`PaddlePaddle/PaddleOCR-VL-1.5` 同图会退化成死循环（小图上很快很准）。
+// ⚠️ 加候选 = 加最坏等待（每级各算一次首字节超时），改这个数组必须同步核对前端
+//    `config/ai-chat-config.js` 的 `timeouts.firstByteMs`。
+const IMAGE_FALLBACK_MODELS_DEFAULT = ['deepseek-ai/DeepSeek-OCR', 'PaddlePaddle/PaddleOCR-VL-1.5'];
+// OCR 类模型**必须换提示词**（2026-09-15 实测，两条都是硬要求）：
+//   · DeepSeek-OCR 只认官方 `<image>\nFree OCR.`；换自然语言提问、或带英文前缀的中文提示
+//     （原先 OCR 模式的默认值 `'OCR this image. 提取…'`）都会返回**空 content**（completion_tokens=0）。
+//   · PaddleOCR-VL 官方提示词是 `OCR:`，且它完全忽略提问内容、只按提示词做 OCR。
+// 同时**必须丢掉对话历史**——OCR 模型接到多轮历史会干扰输出。
+// 注意这张表对**主模型也生效**：OCR 模式的主模型就是 OCR 模型，走这条正好绕开那个空输出的默认提示词。
+const IMAGE_FALLBACK_PROMPTS = {
+  'deepseek-ai/DeepSeek-OCR': '<image>\nFree OCR.',
+  'PaddlePaddle/PaddleOCR-VL-1.5': 'OCR:'
+};
+
+// ═══ 方案 B：OCR 兜底只负责"把字抠出来"，回答交给免费文本模型 ═══
+// 识图的目标是**回答用户的问题**。降级到 OCR 后若直接把原文丢给用户，语义就断了——用户问
+// "这个报错是什么意思"，拿到一屏界面文字。所以 OCR 段只当"读取图片的替身"，回答一律再过一遍
+// 文本链（同样是 0 费用模型，不多花钱）。
+// 为什么不让 OCR 模型顺便处理用户的要求：实测把要求追加进它的提示词会让它**死循环**——
+// 「<image>\nFree OCR.\n\n用户要求：只保留金额数字」→ 输出"保留两位小数"刷满 max_tokens（1050 字）。
+// 官方提示词是它唯一稳定的姿态，加工只能交给文本模型。
+// OCR 文字喂给文本模型的上限：防止一次塞进整页文档把上下文撑爆。
+const OCR_TEXT_MAX_CHARS = 6000;
+// understand：把 OCR 文字当"看图得到的线索"，回答问题。
+const OCR_ANSWER_SYSTEM = '用户上传了一张图片，系统已用 OCR 从图中提取出文字，下面会给你这些文字。'
+  + '请严格基于这些文字作答，不要臆测图中没识别出来的内容；文字明显缺失或被截断的地方要如实说明，不要编造。';
+// OCR 模式（用户明确要求加工时）：整理/转换，但绝不许改内容。
+const OCR_TIDY_SYSTEM = '你是图片文字提取的整理助手。用户上传了一张图片，系统已用 OCR 从图中提取出文字。'
+  + '用户只是要文字时，逐字原样输出，不要改写、不要总结、不要补充说明；'
+  + '用户有额外要求（整理成表格、只保留某类信息、翻译、排序等）时，严格按他的要求处理这些文字。'
+  + '绝对不要添加文字里不存在的信息，也不要推测被截断的内容。';
+// OCR 模式下判断用户是否"还想要加工"（不只是把文字抠出来）。
+// 只要提取文字就直接返回 OCR 原文——过一遍 LLM 有改写数字、丢掉整行的风险，对医疗资料尤其不能忍；
+// 有加工要求才交给文本模型。这同时解决了"OCR 模式下用户原话被官方提示词顶掉"的问题。
+const OCR_PROCESS_HINT_RE = /整理|排版|汇总|总结|归类|分类|表格|列表|筛选|排序|翻译|转换|改成|格式|json|markdown|去重|合并|提取出|分别|对比|只(要|留|保留|需|输出|取)/i;
 
 // ═══ 模型专属参数：必须逐候选模型算，不能按主模型算一次就复用 ═══
 // 实测：Qwen/Qwen3-VL-* 收到 enable_thinking 直接 400；文本模型则需要关掉思考，否则思考
@@ -117,10 +171,17 @@ export function __resetUpstreamHealth() {
   modelHealth.clear();
 }
 
+// 解析环境变量里的模型列表：支持逗号/空白分隔的多个模型（单值写法也照旧兼容）。
+// 返回 null 表示"没配"，由调用方决定用什么默认值。
+function parseModelList(value) {
+  if (typeof value !== 'string') return null;
+  const list = value.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+  return list.length ? list : null;
+}
+
 /**
  * 组装候选模型列表（按顺序降级，内部按模型名去重）。
- * extras 形如 [{ model, timeoutMs }]，用于追加第二/第三备用（只有文本对话用；识图不追加以免
- * 切到非 VLM 的文本模型）。**主备相同时只剩一个候选**，此时不给它探针超时。
+ * extras 形如 [{ model, timeoutMs }]，用于追加更多备用模型。**主备相同时只剩一个候选**。
  */
 function buildCandidates(primaryModel, fallbackModel, primaryMs = PRIMARY_FIRST_BYTE_MS, fallbackMs = FALLBACK_FIRST_BYTE_MS, extras = null) {
   const list = [];
@@ -143,7 +204,7 @@ async function callUpstream(apiKey, requestBody, candidates) {
 
   let lastError = null;
   for (let i = 0; i < list.length; i++) {
-    const { model, timeoutMs } = list[i];
+    const { model, timeoutMs, body: candidateBody } = list[i];
     // 熔断中的模型直接跳过；但**最后一个候选必须试**
     if (i < list.length - 1 && isModelCoolingDown(model)) {
       console.log(`[Upstream] ${model} 熔断中，跳过 → ${list[i + 1].model}`);
@@ -158,7 +219,7 @@ async function callUpstream(apiKey, requestBody, candidates) {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`
         },
-        body: JSON.stringify(applyModelFlags(requestBody, model)),
+        body: JSON.stringify(applyModelFlags(candidateBody || requestBody, model)),
         signal: controller.signal
       });
       clearTimeout(timer);
@@ -188,6 +249,100 @@ const MAX_IMAGE_CHARS = 8 * 1024 * 1024;
 // 解析前体积上限：request.json() 会完整解析整个 body 才轮到图片 413 检查，故先看
 // content-length 把超大请求挡在解析之外（chunked 下该头缺失，退化为解析后校验）。
 const MAX_BODY_BYTES = MAX_IMAGE_CHARS + 64 * 1024;
+
+// ═══ 方案 B：把 OCR 抠出来的文字交给免费文本模型，生成"回答"而不是"一坨原文" ═══
+// 文本链**刻意从 GENERAL_MODEL 起步、跳过主模型**：能走到这里就说明主模型刚在同一个请求里挂了，
+// 再用它只会白等一次探针。默认即 8B → GLM，两个都是免费模型。
+async function answerFromOcrText(env, opts) {
+  const { mode, question, ocrText, isStream, systemPrompt, history, request, injectKnowledge } = opts;
+  const isTidy = mode === 'ocr';
+  // 两段 system 合成一条发：部分模型不认多条 system 消息
+  let sys = [
+    isTidy ? OCR_TIDY_SYSTEM : (systemPrompt || ''),
+    isTidy ? '' : OCR_ANSWER_SYSTEM
+  ].filter(Boolean).join('\n\n');
+
+  const lines = [
+    isTidy ? '【OCR 从图中提取到的原始文字】' : '【系统从用户上传的图片中提取到的文字（OCR，可能有识别误差）】',
+    ocrText,
+    isTidy ? '【用户的要求】' : '【用户的问题】',
+    question || (isTidy ? '提取图片中的全部文字' : '这张图里有什么？')
+  ];
+  if (!isTidy) {
+    lines.push('请基于上面的文字回答用户的问题；若这些文字不足以回答，就说明你只拿到了图片里的文字，并给出基于文字的合理建议。');
+  }
+
+  // 降级后同样走知识库检索：用户发一张 App 报错截图问"这个怎么解决"，答案就在 kb.md 里，
+  // 不检索只能让模型凭常识瞎猜。**只在 understand 模式注入**——OCR 模式的用户要的是"整理文字"，
+  // 塞知识库片段只会跑偏。（与文本路径一致，尊重前端的 injectKnowledge；续写请求会发 false。）
+  // 检索 query 用「用户原话 + OCR 文字」合成的一条消息：只给 OCR 文字会丢掉"怎么解决"这层意图，
+  // 只给用户原话又会缺关键信息（错误码、界面提示原文）；历史一起带上，短问句才能借上文命中。
+  let kbHits = 0;
+  if (!isTidy && injectKnowledge === true) {
+    // Worker 的知识库是**构建期内嵌**的（`import KNOWLEDGE_BASE`），不像 Pages 那样运行时 fetch
+    const { injection, hits } = buildKnowledgeInjection(
+      [...(Array.isArray(history) ? history : []), { role: 'user', content: `${question || ''}\n${ocrText}` }],
+      KNOWLEDGE_BASE,
+      KB_CONFIG_DEFAULTS
+    );
+    if (hits.length > 0 && injection) {
+      sys += injection;
+      kbHits = hits.length;
+      console.log('[KB-RAG] 识图兜底命中:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
+    }
+  }
+
+  const primaryModel = env.GENERAL_MODEL || 'Qwen/Qwen3-8B';
+  const requestBody = {
+    model: primaryModel,
+    // 带上对话历史：与识图主模型那条路径保持一致，"接着刚才的话题发张图"才接得上。
+    // （OCR 模式下 history 本来就是空的——它不带历史。）
+    messages: [
+      { role: 'system', content: sys },
+      ...(Array.isArray(history) ? history : []),
+      { role: 'user', content: lines.join('\n') }
+    ],
+    stream: isStream,
+    max_tokens: 1500,
+    temperature: 0.5,
+    top_p: 0.8
+  };
+  const candidates = buildCandidates(
+    primaryModel,
+    env.FALLBACK_MODEL || FALLBACK_MODEL_DEFAULT,
+    PRIMARY_FIRST_BYTE_MS,
+    FALLBACK_FIRST_BYTE_MS,
+    [{ model: env.SECOND_FALLBACK_MODEL || SECOND_FALLBACK_MODEL_DEFAULT, timeoutMs: SECOND_FALLBACK_FIRST_BYTE_MS }]
+  );
+  const { resp, model: usedModel, error } = await callUpstream(env.SILICONFLOW_API_KEY, requestBody, candidates);
+  if (!resp) throw new Error(`识图后续作答失败：${error?.message || '上游无响应'}`);
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`识图后续作答失败：${resp.status} - ${errText.slice(0, 200)}`);
+  }
+  console.log(`[Image-B] OCR ${ocrText.length} 字 → 文本模型 ${usedModel}（${mode}${isStream ? '/stream' : ''}${kbHits ? `, KB ${kbHits} 块` : ''}）`);
+
+  if (isStream) {
+    if (!resp.body) throw new Error('识图后续作答缺少数据流，请重试');
+    return new Response(resp.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+        // 回传真正产出这段文字的模型（前端「自动续写」靠它保持首尾一致）
+        'X-AI-Model': usedModel,
+        ...buildCorsHeaders(request)
+      }
+    });
+  }
+  const data = await resp.json();
+  const content = data.choices?.[0]?.message?.content;
+  return {
+    choices: [{ message: { content: content || '图片文字已提取，但生成回答时返回为空，请重试' } }],
+    type: isTidy ? 'ocr_response' : 'image_response'
+  };
+}
 
 // ═══ 图片消息处理：识图理解 / OCR 提取 ═══
 async function handleImage(request, env, body) {
@@ -256,25 +411,91 @@ async function handleImage(request, env, body) {
   // 模型专属入参由 callUpstream → applyModelFlags 按实际模型逐个计算：
   // 文本 Qwen 关思考；VL 模型不能带 enable_thinking（实测 400）。
 
-  // 识图候选：**默认只用免费的主模型，不自动切到收费模型**（每一次切换都是钱）。
-  // 需要备用就显式配 IMAGE_FALLBACK_MODEL（必须是 VLM，文本模型会被上游 400）。
-  // OCR 同样不加兜底：通用 VLM 描述图片 ≠ 提取文字，语义和格式都不对。
-  const imageCandidates = mode === 'ocr'
-    ? [{ model: imageRequestBody.model, timeoutMs: NON_STREAM_TIMEOUT_MS }]
-    : buildCandidates(
-        imageRequestBody.model,
-        env.IMAGE_FALLBACK_MODEL,
-        IMAGE_FIRST_BYTE_MS,
-        IMAGE_FIRST_BYTE_MS
-      );
+  // 某候选模型该发的请求体。OCR 类模型必须换成官方提示词、并且不带对话历史
+  // （理由见 IMAGE_FALLBACK_PROMPTS）。非 OCR 模型原样返回，行为与改动前一致。
+  // OCR 候选一律 **stream:false**：它的输出要整段读出来喂给文本模型（方案 B），不需要往
+  // 客户端透传；而且非流式让"读全文再决定"这件事简单可靠。
+  const imagePart = { type: 'image_url', image_url: { url: image } };
+  const imageBodyFor = (model) => {
+    const official = IMAGE_FALLBACK_PROMPTS[model];
+    if (!official) return imageRequestBody;
+    return {
+      ...imageRequestBody,
+      stream: false,
+      messages: [{ role: 'user', content: [imagePart, { type: 'text', text: official }] }]
+    };
+  };
 
-  const { resp, error } = await callUpstream(apiKey, imageRequestBody, imageCandidates);
+  // 识图候选链：主模型 → 若干 **0 费用** 兜底模型（IMAGE_FALLBACK_MODELS_DEFAULT）。
+  // 默认链里全是免费模型，不会悄悄切到收费 VLM；要换就显式配 IMAGE_FALLBACK_MODEL
+  // （支持逗号分隔多个）。⚠️ 别往这里填收费模型——每一次切换都是钱：`Qwen/Qwen3-VL-8B-Instruct`
+  // 官方价 ¥2/M 属收费，`Qwen/Qwen3-VL-30B-A3B-Instruct` ¥2.8/M。
+  // OCR 模式沿用同一张表（它的两个候选都是 OCR 模型，不会兜到"描述型 VLM"上去——语义相反）。
+  const imageFallbacks = parseModelList(env.IMAGE_FALLBACK_MODEL) || IMAGE_FALLBACK_MODELS_DEFAULT;
+  const imageCandidates = buildCandidates(
+    imageRequestBody.model,
+    imageFallbacks[0],
+    IMAGE_FIRST_BYTE_MS,
+    IMAGE_FIRST_BYTE_MS,
+    imageFallbacks.slice(1).map(m => ({ model: m, timeoutMs: IMAGE_FIRST_BYTE_MS }))
+  ).map(c => ({
+    ...c,
+    // OCR 候选是非流式：它等的是"整段生成完"，不能套首字节的 5s（见 IMAGE_OCR_TIMEOUT_MS）
+    timeoutMs: IMAGE_FALLBACK_PROMPTS[c.model] ? IMAGE_OCR_TIMEOUT_MS : c.timeoutMs,
+    body: imageBodyFor(c.model)
+  }));
+
+  const { resp, model: usedImageModel, error } = await callUpstream(apiKey, imageRequestBody, imageCandidates);
   // 上游挂起/5xx：以前这里会一直悬着，前端只能干等到首字节上限
   if (!resp) throw new Error(`识图失败：${error?.message || '上游无响应'}`);
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
     throw new Error(`识图请求失败：${resp.status} - ${errText.slice(0, 200)}`);
+  }
+
+  // ═══ 落到 OCR 模型（说明主 VLM 挂了）：两段式，方案 B ═══
+  // ① 先把 OCR 文字整段读出来；② 再决定"直接给文字"还是"让免费文本模型作答"。
+  // 注意 OCR 候选的 body 已置 stream:false（见 imageBodyFor），所以这里一定拿到 JSON。
+  if (IMAGE_FALLBACK_PROMPTS[usedImageModel]) {
+    const ocrData = await resp.json().catch(() => null);
+    const rawText = (ocrData?.choices?.[0]?.message?.content || '').trim();
+    const ocrText = rawText.slice(0, OCR_TEXT_MAX_CHARS);
+    console.log(`[Image-B] 主模型失败 → OCR(${usedImageModel}) 抠出 ${ocrText.length} 字`);
+    if (!ocrText) {
+      // 连字都没抠出来：如实说，别拿空文本去问模型（那只会得到一段编出来的东西）
+      return {
+        choices: [{ message: { content: '图片识别返回为空，请重试（可能是 SiliconFlow 免费档偶发问题，或图片过大/格式不支持）' } }],
+        type: mode === 'ocr' ? 'ocr_response' : 'image_response'
+      };
+    }
+    // OCR 模式且用户只是要文字 → 直接返回原文。过一遍 LLM 有改写数字、丢整行的风险，
+    // 医疗资料上不能忍；只有用户明确要求加工（整理/筛选/翻译…）才交给文本模型。
+    if (mode === 'ocr' && !OCR_PROCESS_HINT_RE.test(trimmedPrompt)) {
+      return { choices: [{ message: { content: ocrText } }], type: 'ocr_response' };
+    }
+    const systemPrompt = Array.isArray(messages)
+      ? (messages.find(m => m && m.role === 'system' && typeof m.content === 'string')?.content || '')
+      : '';
+    try {
+      return await answerFromOcrText(env, {
+        mode,
+        question: trimmedPrompt,
+        ocrText,
+        isStream: body.stream === true,
+        systemPrompt,
+        history,
+        request,
+        injectKnowledge: body.injectKnowledge === true
+      });
+    } catch (stage2Error) {
+      // 第二段（文本模型）也全挂了：**别把已经抠到的文字一起丢掉**——退回原文，有输出好过报错
+      console.log(`[Image-B] 第二段失败，退回 OCR 原文：${stage2Error?.message || stage2Error}`);
+      return {
+        choices: [{ message: { content: ocrText } }],
+        type: mode === 'ocr' ? 'ocr_response' : 'image_response'
+      };
+    }
   }
 
   // 流式：SSE 直接透传给前端（与文本对话同路径）

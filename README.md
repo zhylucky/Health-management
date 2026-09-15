@@ -8,7 +8,9 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 - **图标**：Lucide 本地子集（`js/vendor/lucide.min.js`，仅打包站点实际用到的 36 个图标）
 - **图表**：ECharts（多 CDN 容错加载器 `js/echarts-loader.js`）
 - **AI**：SiliconFlow 大模型，经 **Cloudflare Pages Functions 同域代理**调用
-  - 对话 / 识图：`Qwen/Qwen3.5-4B`（命中知识库时）或 `Qwen/Qwen3-8B`（未命中走通用模式）
+  - 对话：`Qwen/Qwen3.5-4B`（命中知识库时）或 `Qwen/Qwen3-8B`（未命中走通用模式）
+  - 识图：主模型 `Qwen/Qwen3.5-4B`；挂起时自动降级到 **0 费用的 OCR 兜底链**
+    （`deepseek-ai/DeepSeek-OCR` → `PaddlePaddle/PaddleOCR-VL-1.5`），抠出的文字再交给免费文本模型作答
   - OCR 文字提取：`deepseek-ai/DeepSeek-OCR`
   - 知识库检索：本地 RAG（`shared/kb-retrieval.js`），零依赖、按标题切块 + bigram 打分
 - **后端认证**：Supabase（浏览器 CDN 直连 + anon key）
@@ -79,8 +81,8 @@ AI 驱动的睡眠健康分析平台官方网站。医疗级传感器精准监�
 - **健康管理中心**：数据统计、客户档案、健康趋势分析、房间报告
 - **AI 助手（豆眼儿）**：
   - 流式输出（打字机效果，50ms 渲染节流）
-  - 多模态识图（Qwen3.5-4B 免费，粘贴/上传图片自动切换）
-  - OCR 文字提取（DeepSeek-OCR）
+  - 多模态识图（主模型 Qwen3.5-4B 免费；挂起时自动降级到免费 OCR 链，并由免费文本模型生成回答）
+  - OCR 文字提取（DeepSeek-OCR；用户要求"整理成表格／只保留某类信息"等加工时才交给文本模型）
   - 知识库 RAG（命中知识库 → 严格提示词 + 4B；未命中 → 通用提示词 + 8B）
   - Markdown 渲染（标题/列表/代码块/加粗/表格；行首 `>` 引用标记会被剥离）
   - 图片灯箱（点击消息内图片放大查看）
@@ -129,7 +131,7 @@ node scripts/kb-selftest.js   # 22 题自测，任一路由目标解析为 0 块
 改动 AI 链路（`js/ai-chat.js` 渲染、`shared/kb-retrieval.js` 裁剪、`functions/api/chat.js`）后重跑：
 
 ```bash
-node scripts/test-ai-hardening.js   # 37 项：XSS 拦截 / 裁剪等价性与复杂度 / 请求上限（含解析前体积拦截）/ 识图历史与文本预算 / 重试策略 / 两后端常量一致
+node scripts/test-ai-hardening.js   # 65 项：XSS 拦截 / 裁剪等价性与复杂度 / 请求上限（含解析前体积拦截）/ 识图历史与文本预算 / 识图免费兜底链与两段式作答 / 识图知识库注入 / 重试策略 / 两后端常量一致（23 项）
 ```
 
 或直接 `npm test`（= 上条 + `test-context-budget.js`，两条一起跑）。
@@ -157,13 +159,26 @@ npm run dev:static
 
 AI 链路本地自测需要 `.dev.vars`：复制 `.dev.vars.example` 为 `.dev.vars` 并填入真实密钥（`.dev.vars` 已被 gitignore，不会入库；模板文件本身入库）。
 
+### 上游故障自查（平台问题 vs 我方问题）
+
+模型「时好时坏 / 一直转圈」时，先用诊断脚本判方向，别急着改代码：
+
+```bash
+node scripts/diag-upstream.js                      # 诊断默认免费模型（4B / 8B），文本形状
+node scripts/diag-upstream.js --runs 3 模型X        # 加大样本（这类故障是间歇性的）
+node scripts/diag-upstream.js --image 模型X         # 发一张真 PNG，判断能否识图
+```
+
+判读：**零字节挂起（连响应头都没有）= 平台侧该模型不可用**；**4xx 且带 message = 我方请求/参数或账户问题**
+（例如给文本模型发图片会回 `The model is not a VLM`，恰恰说明图片载荷合法）。脚本会先预热一发以排除本机代理首连抖动，再按成功率给结论。
+
 ## 环境变量
 
 | 变量 | 位置 | 说明 |
 |------|------|------|
 | `SILICONFLOW_API_KEY` | Pages 项目 secret / `.dev.vars` | SiliconFlow 密钥，AI 助手必需 |
-| `IMAGE_MODEL` | 可选 | 识图模型，默认 `Qwen/Qwen3.5-4B`（**免费**）。指向收费模型会导致每次发图都产生费用 |
-| `IMAGE_FALLBACK_MODEL` | 可选 | 识图故障转移模型，**默认空 = 不自动切换**（防止悄悄切到收费模型）。若设置必须是 VLM——文本模型对图片会被上游 400 |
+| `IMAGE_MODEL` | 可选 | 识图**主**模型，默认 `Qwen/Qwen3.5-4B`（**免费**）。指向收费模型会导致每次发图都产生费用 |
+| `IMAGE_FALLBACK_MODEL` | 可选 | 覆盖识图兜底链，**支持逗号分隔多个**。不设时用代码默认链 `deepseek-ai/DeepSeek-OCR,PaddlePaddle/PaddleOCR-VL-1.5`（**全部 ¥0**）。⚠️ 别填收费 VLM：`Qwen/Qwen3-VL-8B-Instruct` 官方价 **¥2/M**、`Qwen/Qwen3-VL-30B-A3B-Instruct` **¥2.8/M** |
 | `OCR_MODEL` | 可选 | OCR 模型，默认 `deepseek-ai/DeepSeek-OCR` |
 | `KB_MODEL` | 可选 | 对话快通道主模型，默认 `Qwen/Qwen3.5-4B`（命中知识库/寒暄走它） |
 | `GENERAL_MODEL` | 可选 | 未命中知识库时的模型，默认 `Qwen/Qwen3-8B` |
@@ -179,8 +194,11 @@ AI 链路本地自测需要 `.dev.vars`：复制 `.dev.vars.example` 为 `.dev.v
 > | `Qwen/Qwen3.5-4B` 文本 | **1/8 成功**，失败全部是 45s 零字节挂起（与 prompt 长短无关）；当天稍后再测 **0/6** |
 > | `Qwen/Qwen3-8B` 文本 | **8/8 + 6/6 成功**，首内容 0.6~5.0s；但短答案总时长波动极大（31~66 字要 16.7~46.4s） |
 > | `THUDM/GLM-Z1-9B-0414` 文本（免费） | **6/6 成功**，短答案总时长 3.1~4.8s（比 8B 快得多）；但它是推理模型，**思考关不掉**——即使传 `enable_thinking:false` 仍输出 190~1420 字思考，首个正文字要等到 4.2~23.4s。**不是 VLM** |
-> | `Qwen/Qwen3.5-4B` 识图 | 3/3 零字节挂起（当天无法实测）。**它是本项目一直使用的免费多模态模型** |
-> | `Qwen/Qwen3-VL-8B-Instruct` 识图 | 200，首内容 728ms，答案正确；但**很可能收费**，已从默认值移除，只在显式配置时才用 |
+> | `Qwen/Qwen3.5-4B` 识图 | **0/3 零字节挂起**（当天平台侧全程不可用，文本侧 0/6）。**它是本项目一直使用的免费多模态模型** |
+> | `Qwen/Qwen3-VL-8B-Instruct` 识图 | 200，首内容 728ms，答案正确；但官方价格页实测 **输入 ¥2/M = 收费**，**不接入默认链** |
+> | `deepseek-ai/DeepSeek-OCR` 识图兜底（¥0） | 200；小图 299ms，**160KB 全页表格 2032ms 完整读出**。⚠️ 只认官方 `<image>\nFree OCR.`（给自然语言提问返回**空 content**） |
+> | `PaddlePaddle/PaddleOCR-VL-1.5` 识图兜底（¥0） | 200；小图 211ms 准确，但 **160KB 大截图会退化成死循环**（`¥0.00 ☐` 刷满 max_tokens）。官方提示词 `OCR:` |
+> | `Qwen/Qwen2.5-VL-7B-Instruct` | **400 `Model does not exist`**（已下线，别再试） |
 >
 > ⚠️ **别把两个模型的报错搞混**：`The model is not a VLM`（400）是 **`Qwen/Qwen3-8B`** 回的，
 > 不是 4B。4B 按历史配置与实测都是多模态的，只是因为挂起而当天测不出来。
@@ -193,11 +211,22 @@ AI 链路本地自测需要 `.dev.vars`：复制 `.dev.vars.example` 为 `.dev.v
 > `THUDM/GLM-Z1-9B-0414`(8s) ≈ 最坏 26.5s，仍在前端 35s 首字节预算内。GLM 放最后是因为
 > 它是推理模型、思考关不掉（见上表），首个正文字要等 7.5~23.4s，只在"前两个都挂了"时用它才划算。
 >
-> **费用约束（重要）**：目前确认免费的只有 `Qwen/Qwen3.5-4B`、`Qwen/Qwen3-8B` 与
-> `THUDM/GLM-Z1-9B-0414`。识图链路已改为**默认不自动切到收费模型**——`IMAGE_FALLBACK_MODEL`
-> 默认为空，若显式指向 `Qwen/Qwen3-VL-*` 这类模型，每次切换都会产生费用。
-> 代价是：4B 挂起期间识图会失败（约 10s 后返回错误），这是"免费"与"可用"之间的取舍。
-> OCR 不加兜底——通用 VLM「描述图片」≠「提取文字」，语义和格式都不对。
+> **费用约束（重要）**：**只允许 0 费用模型**（账户余额极低，且有实际扣费记录）。官方价格页内嵌数据实扒过：
+> 全部 ¥0 模型 19 个，带「视觉输入」标签的只有 `Qwen/Qwen3.5-4B`、`Qwen/Qwen3-8B`、`Kwai-Kolors/Kolors`
+> ——而 **`Qwen/Qwen3-8B` 的视觉标签是错的**（发图回 400 `The model is not a VLM`）。所以免费档里
+> **没有第二个能"看图回答"的通用 VLM**，兜底只能挂 OCR 模型。
+>
+> **识图三层结构（全部 ¥0）**：
+> 1. 主 VLM `Qwen/Qwen3.5-4B` —— 成功即流式透传，行为与以前完全一致；
+> 2. 挂起则降级到免费 OCR 链 `deepseek-ai/DeepSeek-OCR` → `PaddlePaddle/PaddleOCR-VL-1.5`，
+>    **必须换用各自的官方提示词**（给它们自然语言提问会返回空或死循环）；
+> 3. 抠出的文字交给免费文本链（`Qwen/Qwen3-8B` → `THUDM/GLM-Z1-9B-0414`）**生成回答**，
+>    understand 模式还会用「用户原话 + OCR 文字」走一次知识库检索再作答。
+>
+> 时间预算：VLM 探针 **5s** + 两个非流式 OCR 各 **12s** = 最坏 **29s** < 前端 35s 首字节预算
+> （`test-ai-hardening.js` 有一条断言钉住这个上界，加候选会立刻失败）。
+> OCR 模式下若用户只是要文字，**直接返回 OCR 原文、不过 LLM**——避免改写数字、丢整行。
+> 第二段全挂时退回 OCR 原文而不是报错。
 >
 > 环境变量的改动**必须重新部署**才对 Functions 生效（实测：改完 secret 后旧部署仍返回 402，
 > 直到下一次部署完成才恢复）。

@@ -18,8 +18,12 @@ const AI_CHAT_CONFIG = {
     //      · ocrModel   —— 前端从不发送该字段，后端也只读 env.OCR_MODEL。
     //    改这三个字段不会改变实际使用的模型，要换模型请改环境变量。
     model: 'Qwen/Qwen3.5-4B',
-    // 识图模型 —— 不生效，见上方说明。后端默认是免费的 Qwen/Qwen3.5-4B（它间歇性挂起，
-    // 识图常失败）；若想稳定识图需在环境变量里显式换 VLM，但那类模型很可能收费。
+    // 识图模型 —— 不生效，见上方说明。后端默认是免费的 Qwen/Qwen3.5-4B（它间歇性挂起，2026-09-15
+    // 当天平台侧全程零字节挂起）。挂起时后端会降级到免费的 OCR 兜底链并把抠出的文字交给免费文本模型
+    // 生成回答（方案 B）：deepseek-ai/DeepSeek-OCR → PaddlePaddle/PaddleOCR-VL-1.5，见
+    // functions/api/chat.js 的 IMAGE_FALLBACK_MODELS_DEFAULT。想换链要改环境变量
+    // IMAGE_FALLBACK_MODEL（可逗号分隔多个），⚠️ 别填收费 VLM：Qwen/Qwen3-VL-8B-Instruct 是 ¥2/M、
+    // VL-30B-A3B 是 ¥2.8/M。
     imageModel: 'Qwen/Qwen3.5-4B',
     // OCR 模型（免费，图片/文档/截图 → 文字/markdown 提取）—— 不生效，见上方说明
     ocrModel: 'deepseek-ai/DeepSeek-OCR',
@@ -33,7 +37,10 @@ const AI_CHAT_CONFIG = {
     // 两段式超时（ms）：与后端 functions/api/chat.js 的探针/备用超时配套，
     // 改后端阈值时**必须同步改这里**，否则前端会在后端故障转移完成前就 abort。
     //   firstByteMs —— 只等响应头。后端最坏 = 主模型探针 3.5s + 备用模型首字节 15s ≈ 18.5s
-    //                  （识图单模型 10s）；这里给 35s 留足网络与冷启动余量。
+    //                  （识图候选链最坏 = VLM 探针 5s + 两个非流式 OCR 各 12s = 29s）；这里给 35s
+    //                  留足网络与冷启动余量。识图降级到 OCR 后还有一次文本模型调用（方案 B），
+    //                  它也在"首字节"之前发生。⚠️ 往后端识图链里加候选 = 再加一次超时，逼近这个
+    //                  值时必须一起调大。
     //   idleMs      —— 生成阶段空闲上限。只要数据持续到达就不断重置，长时间无数据才判断连。
     //                  用空闲（而非总时长）是因为上下文越大生成越久，固定总超时会把正常的
     //                  长回答输出到一半掐断。
