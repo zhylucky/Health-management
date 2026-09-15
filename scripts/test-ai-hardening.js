@@ -232,7 +232,7 @@ async function testChatHandler() {
   // 3 次只是把超时时间翻 3 倍，仍然必败。
   // 新契约：主模型失败后**换备用模型**再试（每个模型只试 1 次，否则挂起场景的等待会成倍
   // 放大）。总尝试次数从 3 降到 2，但对"模型整体不可用"这一真实故障模式有效。
-  await retryCase('5xx 换备用模型后仍失败 → 504', () => errRes(503), 504, 2);
+  await retryCase('5xx 依次换两个备用模型仍失败 → 504', () => errRes(503), 504, 3);
   await retryCase('5xx 后换备用模型成功 → 200', (n) => (n === 1 ? errRes(503) : okJson()), 200, 2);
   await retryCase('200 但非 JSON → 502', () => new Response('not json', { status: 200 }), 502, 1);
   // 读 body 失败：不再重试。首字节之后的中断发生在"已经生成内容"的阶段，且此刻换模型
@@ -241,14 +241,42 @@ async function testChatHandler() {
     () => new Response(new ReadableStream({ start(c) { c.error(new Error('body broken')); } }), { status: 200 }),
     504, 1);
   // 主备同名（未配 FALLBACK_MODEL / 主模型就是备用模型）时不得"假装故障转移"：
-  // 只有一个候选，上游 5xx 就该 1 次调用直接 504（用 8B 当主模型即可复现同名场景）。
+  // 同一个模型只能被调用一次，之后直接接第二备用。
   {
     __resetUpstreamHealth();
-    let calls = 0;
-    globalThis.fetch = async () => { calls++; return errRes(503); };
+    const seen = [];
+    globalThis.fetch = async (url, opts) => { seen.push(JSON.parse(opts.body).model); return errRes(503); };
     const res = await onRequestPost({ request: mkReq({ ...chatBody, model: 'Qwen/Qwen3-8B' }), env });
-    check('主模型=备用模型时 → 只调用 1 次并 504', res.status === 504 && calls === 1,
-      `(状态 ${res.status}, 上游 ${calls} 次)`);
+    check('主模型=备用模型时不重复调用，直接接第二备用（8B → GLM）',
+      res.status === 504 && seen.length === 2 &&
+      seen[0] === 'Qwen/Qwen3-8B' && seen[1] === 'THUDM/GLM-Z1-9B-0414',
+      `(状态 ${res.status}, 依次 ${seen.join(' → ')})`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 三级免费候选链：4B → 8B → GLM（三个都是确认免费的模型）═══
+  // 顺序即优先级：4B 最快（活着时）→ 8B 最稳 → GLM 兜底（免费但思考关不掉，所以放最后）。
+  // 同时校验：非 Qwen 模型不得携带 enable_thinking（GLM 收到它也照样思考，加了没意义；
+  // 而 VL 类模型收到它会直接 400）。
+  {
+    __resetUpstreamHealth();
+    const seen = [];
+    let glmBody = null;
+    globalThis.fetch = async (url, opts) => {
+      const b = JSON.parse(opts.body);
+      seen.push(b.model);
+      if (b.model.includes('GLM')) glmBody = b;
+      return seen.length < 3 ? errRes(503) : okJson();
+    };
+    const res = await onRequestPost({ request: mkReq({ ...chatBody, stream: true }), env });
+    check('三级免费候选链按顺序降级：4B → 8B → GLM',
+      res.status === 200 && seen.length === 3 &&
+      seen[0] === 'Qwen/Qwen3.5-4B' && seen[1] === 'Qwen/Qwen3-8B' && seen[2] === 'THUDM/GLM-Z1-9B-0414',
+      `(状态 ${res.status}, 依次 ${seen.join(' → ')})`);
+    check('第二备用（GLM，非 Qwen）不携带 enable_thinking',
+      glmBody && glmBody.enable_thinking === undefined && glmBody.enable_search === undefined,
+      `(enable_thinking=${glmBody && glmBody.enable_thinking})`);
+    __resetUpstreamHealth();
   }
 
   // ═══ 首字节超时 + 模型故障转移（核心场景）═══
@@ -318,8 +346,8 @@ async function testChatHandler() {
     globalThis.fetch = async (url, opts) => { vlCaptured.push(JSON.parse(opts.body)); return okJson(); };
     await onRequestPost({ request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', messages: [{ role: 'user', content: 'x' }] }), env });
     const vlBody = vlCaptured[0];
-    check('识图默认模型是 VLM 且不携带 enable_thinking',
-      vlBody.model === 'Qwen/Qwen3-VL-8B-Instruct' && vlBody.enable_thinking === undefined && vlBody.enable_search === undefined,
+    check('识图默认模型是免费的 Qwen/Qwen3.5-4B 且关闭思考',
+      vlBody.model === 'Qwen/Qwen3.5-4B' && vlBody.enable_thinking === false && vlBody.enable_search === false,
       `(model=${vlBody.model}, enable_thinking=${vlBody.enable_thinking})`);
 
     const textCaptured = [];
@@ -333,9 +361,18 @@ async function testChatHandler() {
     __resetUpstreamHealth();
   }
 
-  // ═══ 识图必须能自愈：生产的 IMAGE_MODEL 可能被 env 显式设成坏模型，覆盖代码默认值 ═══
-  // 这时只能靠 IMAGE_MODEL_DEFAULT 充当兜底 VLM，否则"改了默认值也不生效"。
+  // ═══ 识图不得悄悄切到收费模型：默认无备用，只有显式配置 IMAGE_FALLBACK_MODEL 才切换 ═══
   {
+    __resetUpstreamHealth();
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return errRes(503); };
+    const res = await onRequestPost({
+      request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, messages: [{ role: 'user', content: 'x' }] }),
+      env
+    });
+    check('识图默认不自动切换（1 次上游调用，避免产生费用）',
+      res.status === 500 && calls === 1, `(状态 ${res.status}, 上游 ${calls} 次)`);
+
     __resetUpstreamHealth();
     const seen = [];
     globalThis.fetch = async (url, opts) => {
@@ -343,14 +380,14 @@ async function testChatHandler() {
       seen.push(b.model);
       return seen.length === 1 ? errRes(503) : okJson();
     };
-    const res = await onRequestPost({
+    const res2 = await onRequestPost({
       request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, messages: [{ role: 'user', content: 'x' }] }),
-      env: { ...env, IMAGE_MODEL: 'Qwen/Qwen3.5-4B' }
+      env: { ...env, IMAGE_FALLBACK_MODEL: 'Qwen/Qwen3-VL-8B-Instruct' }
     });
-    check('识图主模型 5xx → 自动换到 VLM 兜底',
-      res.status === 200 && seen.length === 2 &&
+    check('显式配置 IMAGE_FALLBACK_MODEL 后才切换',
+      res2.status === 200 && seen.length === 2 &&
       seen[0] === 'Qwen/Qwen3.5-4B' && seen[1] === 'Qwen/Qwen3-VL-8B-Instruct',
-      `(状态 ${res.status}, 依次 ${seen.join(' → ')})`);
+      `(状态 ${res2.status}, 依次 ${seen.join(' → ')})`);
     __resetUpstreamHealth();
   }
 
@@ -391,7 +428,8 @@ function testBackendParity() {
     'IMAGE_HISTORY_MAX_CHARS', 'IMAGE_PROMPT_MAX_CHARS',
     'PRIMARY_FIRST_BYTE_MS', 'FALLBACK_FIRST_BYTE_MS', 'IMAGE_FIRST_BYTE_MS',
     'NON_STREAM_TIMEOUT_MS', 'MODEL_FAIL_THRESHOLD', 'MODEL_COOLDOWN_MS',
-    'FALLBACK_MODEL_DEFAULT', 'IMAGE_MODEL_DEFAULT'];
+    'FALLBACK_MODEL_DEFAULT', 'IMAGE_MODEL_DEFAULT',
+    'SECOND_FALLBACK_MODEL_DEFAULT', 'SECOND_FALLBACK_FIRST_BYTE_MS'];
   const bad = [];
   for (const n of names) {
     const a = grab(pages, n), b = grab(worker, n);

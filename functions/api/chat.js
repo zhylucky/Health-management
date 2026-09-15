@@ -59,10 +59,19 @@ const MODEL_FAIL_THRESHOLD = 2;
 const MODEL_COOLDOWN_MS = 60000;
 // 备用模型：主模型整体不可用时兜底。可用环境变量 FALLBACK_MODEL 覆盖。
 const FALLBACK_MODEL_DEFAULT = 'Qwen/Qwen3-8B';
-// 识图默认模型：原来的 Qwen/Qwen3.5-4B 实测 0/4 零字节挂起，而且它**不是 VLM**
-// （SiliconFlow 对非视觉模型直接回 400 "The model is not a VLM"）。
-// 实测 Qwen/Qwen3-VL-8B-Instruct：200、首内容 728ms、正确答出图片颜色。
-const IMAGE_MODEL_DEFAULT = 'Qwen/Qwen3-VL-8B-Instruct';
+// 第二备用（最后一道兜底）：同样必须是免费模型。实测 THUDM/GLM-Z1-9B-0414 免费、6/6 可靠、
+// 短答案总时长 3.1~4.8s（比 8B 快得多）；但它是推理模型且**思考关不掉**（传 enable_thinking:false
+// 仍输出 190~1420 字思考），首个正文字要等 7.5~23.4s，所以只当"前两个都挂了"时的最后兜底。
+const SECOND_FALLBACK_MODEL_DEFAULT = 'THUDM/GLM-Z1-9B-0414';
+// 它实测首字节只要 ~300~500ms，8s 足够；取短值是为了让三候选最坏总时长
+// （3.5 + 15 + 8 ≈ 26.5s）留在前端 35s 的首字节预算内。
+const SECOND_FALLBACK_FIRST_BYTE_MS = 8000;
+// 识图默认模型：**必须是免费模型**——若指向收费模型，每次发图都会产生费用。
+// Qwen/Qwen3.5-4B 是一直在用的免费多模态模型，但它在 SiliconFlow 上间歇性零字节挂起
+// （2026-09-15 实测当天文本 0/6、发图 3/3 全部挂起），所以识图会经常失败。
+// 需要稳定识图，请在 Cloudflare 环境变量里显式指定一个 VLM（例如 Qwen/Qwen3-VL-8B-Instruct，
+// 实测 200、首内容 728ms、答案正确，但**很可能收费**，请自行在模型广场确认计费）。
+const IMAGE_MODEL_DEFAULT = 'Qwen/Qwen3.5-4B';
 
 async function loadKnowledgeBase(request) {
   if (KNOWLEDGE_BASE_CACHE) return KNOWLEDGE_BASE_CACHE;
@@ -141,18 +150,21 @@ export function __resetUpstreamHealth() {
 }
 
 /**
- * 组装候选模型列表。
- * 主备相同时（没配 FALLBACK_MODEL，或主模型本身就是备用模型）只有一个候选，此时**不给它
- * 探针超时**——没有更快的替代品，等久一点才是对的；否则每次排队都白白 504。
+ * 组装候选模型列表（按顺序降级，内部按模型名去重）。
+ * extras 形如 [{ model, timeoutMs }]，用于追加第二/第三备用（只有文本对话用；识图不追加以免
+ * 切到非 VLM 的文本模型）。**主备相同时只剩一个候选**，此时不给它探针超时——没有更快的
+ * 替代品，等久一点才是对的；否则每次排队都白白 504。
  */
-function buildCandidates(primaryModel, fallbackModel, primaryMs = PRIMARY_FIRST_BYTE_MS, fallbackMs = FALLBACK_FIRST_BYTE_MS) {
-  if (!fallbackModel || fallbackModel === primaryModel) {
-    return [{ model: primaryModel, timeoutMs: fallbackMs }];
-  }
-  return [
-    { model: primaryModel, timeoutMs: primaryMs },
-    { model: fallbackModel, timeoutMs: fallbackMs }
-  ];
+function buildCandidates(primaryModel, fallbackModel, primaryMs = PRIMARY_FIRST_BYTE_MS, fallbackMs = FALLBACK_FIRST_BYTE_MS, extras = null) {
+  const list = [];
+  const push = (model, timeoutMs) => {
+    if (model && !list.some(x => x.model === model)) list.push({ model, timeoutMs });
+  };
+  push(primaryModel, primaryMs);
+  push(fallbackModel, fallbackMs);
+  for (const e of extras || []) push(e.model, e.timeoutMs);
+  if (list.length === 1) list[0].timeoutMs = fallbackMs;
+  return list;
 }
 
 /**
@@ -281,15 +293,14 @@ async function handleImage(env, body) {
   // 模型专属入参由 callUpstream → applyModelFlags 按实际模型逐个计算：
   // 文本 Qwen 关思考；VL 模型不能带 enable_thinking（实测 400）。
 
-  // 识图候选：主模型 + **默认兜底一个已知可用的 VLM**。原因：环境变量 IMAGE_MODEL 一旦被显式
-  // 设成坏模型（例如老的 Qwen/Qwen3.5-4B），代码里的默认值就被覆盖、修了也不生效；加了兜底后
-  // 无需改任何环境变量也能自愈（主模型挂起 10s → 自动换 VL 模型；连续失败后熔断直接跳过它）。
-  // OCR 不加兜底：通用 VLM 描述图片 ≠ 提取文字，格式语义都不对。
+  // 识图候选：**默认只用免费的主模型，不自动切到收费模型**（每一次切换都是钱）。
+  // 需要备用就显式配 IMAGE_FALLBACK_MODEL（必须是 VLM，文本模型会被上游 400）。
+  // OCR 同样不加兜底：通用 VLM 描述图片 ≠ 提取文字，语义和格式都不对。
   const imageCandidates = mode === 'ocr'
     ? [{ model: imageRequestBody.model, timeoutMs: NON_STREAM_TIMEOUT_MS }]
     : buildCandidates(
         imageRequestBody.model,
-        env.IMAGE_FALLBACK_MODEL || IMAGE_MODEL_DEFAULT,
+        env.IMAGE_FALLBACK_MODEL,
         IMAGE_FIRST_BYTE_MS,
         IMAGE_FIRST_BYTE_MS
       );
@@ -404,9 +415,10 @@ export async function onRequestPost(context) {
 
     // 最终使用的模型（便于 Cloudflare 日志确认双通道是否生效）
     const finalModel = kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B';
-    // 故障转移目标：主模型整体不可用（挂起/5xx）时改用它重试。与主模型相同时候选只剩一个。
+    // 故障转移链（**全部是免费模型**）：主模型 → 备用 → 第二备用。任一同名则自动去重。
     const fallbackModel = env.FALLBACK_MODEL || FALLBACK_MODEL_DEFAULT;
-    console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'}, fallback=${fallbackModel})`);
+    const secondFallbackModel = env.SECOND_FALLBACK_MODEL || SECOND_FALLBACK_MODEL_DEFAULT;
+    console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'}, fallback=${fallbackModel}, second=${secondFallbackModel})`);
 
     // ═══ 超窗降级兜底：system+知识库注入+历史 估算超出预算时从最旧历史丢弃（保留 system 与最新提问），
     // 避免上下文超窗被 SiliconFlow 400 拒绝。前端已有第一道裁剪，这里兜住旧缓存前端等异常体积请求 ═══
@@ -434,7 +446,9 @@ export async function onRequestPost(context) {
     // ── 流式：透传 SSE ──
     if (isStream) {
       const { resp, model: usedModel, error } = await callUpstream(
-        apiKey, requestBody, buildCandidates(finalModel, fallbackModel)
+        apiKey, requestBody,
+        buildCandidates(finalModel, fallbackModel, PRIMARY_FIRST_BYTE_MS, FALLBACK_FIRST_BYTE_MS,
+          [{ model: secondFallbackModel, timeoutMs: SECOND_FALLBACK_FIRST_BYTE_MS }])
       );
       // 全部候选模型失败：首字节超时或上游 5xx。如实回 504，让前端给出可操作的提示，
       // 而不是让它干等到自己的超时计时触发。
@@ -466,7 +480,9 @@ export async function onRequestPost(context) {
     // 注意：这里读 body 不再设超时——首字节计时在拿到响应头时已解除，长回答可以完整
     // 生成而不会被拦腰截断；整体时长由前端超时兜底。前端默认 stream=true，本分支是兜底路径。
     const { resp, model: usedModel, error } = await callUpstream(
-      apiKey, requestBody, buildCandidates(finalModel, fallbackModel, NON_STREAM_TIMEOUT_MS, NON_STREAM_TIMEOUT_MS)
+      apiKey, requestBody,
+      buildCandidates(finalModel, fallbackModel, NON_STREAM_TIMEOUT_MS, NON_STREAM_TIMEOUT_MS,
+        [{ model: secondFallbackModel, timeoutMs: NON_STREAM_TIMEOUT_MS }])
     );
     if (!resp) {
       return json({ error: 'AI 服务暂时不可用，请稍后重试', details: error?.message }, 504);

@@ -21,8 +21,13 @@ const kb = require('../shared/kb-retrieval.js');
 
 const ROOT = path.join(__dirname, '..');
 const ENDPOINT = 'https://api.siliconflow.cn/v1/chat/completions';
-const MODELS = ['Qwen/Qwen3.5-4B', 'Qwen/Qwen3-8B'];
+// 默认只对比这两个（用户确认免费）。用法：node scripts/bench-models.js [轮数] [模型1,模型2,...]
+const MODELS = (process.argv[3]
+  ? process.argv[3].split(',').map(s => s.trim()).filter(Boolean)
+  : ['Qwen/Qwen3.5-4B', 'Qwen/Qwen3-8B']);
 const QUESTION = '睡眠监测的原理是什么';   // 本地实测命中 4 块，注入约 2.9k 字符
+// 用于判断"答案是否真的用上了知识库"（这些都是 kb.md 命中段落里出现的词）
+const KB_KEYWORDS = ['脑电', 'EEG', '传感器', '睡眠分期', '生理信号', '多导'];
 
 const IDLE_CAP_MS = 20000;    // 相邻帧间隔超过此值 = 真的卡住（生产前端空闲上限是 45s）
 const TOTAL_CAP_MS = 45000;   // 无任何响应帧的上限：超过它在生产里也一定是失败（前端首字节上限 35s）
@@ -88,6 +93,7 @@ async function probe(apiKey, model, messages, disableThinking) {
   let timer = null;
   let abortReason = null;
   let ttfb = null, ttfc = null, chars = 0, reasoning = 0, frames = 0;
+  let text = '';
   let lastFrameAt = t0, maxGap = 0;
 
   const arm = (ms, reason) => {
@@ -137,12 +143,13 @@ async function probe(apiKey, model, messages, disableThinking) {
           if (typeof delta.content === 'string' && delta.content) {
             if (ttfc === null) ttfc = Date.now() - t0;
             chars += delta.content.length;
+            text += delta.content;
           }
         } catch (e) { /* 非 JSON 帧 */ }
       }
     }
     if (timer) clearTimeout(timer);
-    return { status: 200, ttfb, ttfc, total: Date.now() - t0, chars, reasoning, frames, maxGap };
+    return { status: 200, ttfb, ttfc, total: Date.now() - t0, chars, reasoning, frames, maxGap, text };
   } catch (e) {
     if (timer) clearTimeout(timer);
     if (e.name === 'AbortError') {
@@ -191,12 +198,34 @@ const fmt = (v) => (v === null || v === undefined ? '—' : `${v}ms`);
     }
   }
 
+  console.log('参数兼容性（显式带 enable_thinking:false —— 生产只给 Qwen 文本模型加它）：');
+  for (const model of MODELS) {
+    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 15000);
+    try {
+      const res = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
+        body: JSON.stringify({ model, messages: shapes[0].messages, stream: false, max_tokens: 10, enable_thinking: false }),
+        signal: ac.signal
+      });
+      const txt = await res.text(); clearTimeout(t);
+      console.log(`  ${model.padEnd(30)} HTTP ${res.status} ${res.ok ? '接受' : txt.replace(/\s+/g, ' ').slice(0, 110)}`);
+    } catch (e) { clearTimeout(t); console.log(`  ${model.padEnd(30)} ${e.name === 'AbortError' ? '15s 无响应（等效于不接受）' : e.message}`); }
+  }
+  console.log('');
+
   console.log('═══ 判定 ═══');
   for (const model of MODELS) {
     for (const shape of shapes) {
       const cells = rows.filter(r => r.model === model && r.shape === shape.name);
       const ok = cells.filter(r => r.status === 200);
-      console.log(`  ${model.padEnd(16)} ${shape.name.padEnd(10)} ${ok.length === RUNS ? '全部正常' : ok.length === 0 ? '全部失败' : `${ok.length}/${RUNS} 成功`}`);
+      const withText = ok.filter(r => (r.chars || 0) > 0);
+      const reasonChars = median(ok.map(r => r.reasoning));
+      const lastText = ok.length ? (ok[ok.length - 1].text || '') : '';
+      const kw = KB_KEYWORDS.filter(k => lastText.includes(k));
+      console.log(`  ${model.padEnd(28)} ${shape.name.padEnd(10)} ${ok.length === RUNS ? '全部成功' : ok.length === 0 ? '全部失败' : `${ok.length}/${RUNS} 成功`}` +
+        `｜有内容 ${withText.length}/${ok.length}｜思考字中位 ${reasonChars === null ? 0 : reasonChars}` +
+        (shape.name.startsWith('长') ? `｜末次命中KB词 ${kw.length}/${KB_KEYWORDS.length}` : ''));
     }
   }
   const stalled = rows.filter(r => r.status === 0);

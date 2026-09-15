@@ -18,9 +18,9 @@ const AI_CHAT_CONFIG = {
     //      · ocrModel   —— 前端从不发送该字段，后端也只读 env.OCR_MODEL。
     //    改这三个字段不会改变实际使用的模型，要换模型请改环境变量。
     model: 'Qwen/Qwen3.5-4B',
-    // 识图模型 —— 不生效，见上方说明。后端默认已改为 Qwen/Qwen3-VL-8B-Instruct：
-    // 原来的 Qwen/Qwen3.5-4B 实测零字节挂起（0/4），而且它根本不是 VLM。
-    imageModel: 'Qwen/Qwen3-VL-8B-Instruct',
+    // 识图模型 —— 不生效，见上方说明。后端默认是免费的 Qwen/Qwen3.5-4B（它间歇性挂起，
+    // 识图常失败）；若想稳定识图需在环境变量里显式换 VLM，但那类模型很可能收费。
+    imageModel: 'Qwen/Qwen3.5-4B',
     // OCR 模型（免费，图片/文档/截图 → 文字/markdown 提取）—— 不生效，见上方说明
     ocrModel: 'deepseek-ai/DeepSeek-OCR',
     // 流式输出：逐字显示（打字机效果），显著改善响应感知速度
