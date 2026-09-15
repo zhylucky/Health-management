@@ -40,3 +40,11 @@ Thumbs.db
 .agents/
 # AI 识图调试工具运行缓存（.dsh 工具生成，非项目文件）
 .dsh-vision-toolkit/
+
+# 内部文档与选型笔记：不进公开发布面
+# （Pages 以仓库根为发布根 —— 只要被 git 跟踪就公网可下载；这些文件运行时无人读取）
+/docs/
+/model-swap-options-and-free-platforms.md
+# ⚠️ 不要加 Markdown/kb.md：它是运行时依赖（functions/api/chat.js 启动时
+#    fetch('/Markdown/kb.md')）。撤下后该路径会返回软 404 的首页 HTML，而
+#    loadKnowledgeBase 不做内容校验就缓存它 → 全部提问静默降级为通用模式。
