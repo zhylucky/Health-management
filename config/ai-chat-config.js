@@ -11,14 +11,16 @@ const AI_CHAT_CONFIG = {
     // ⚠️ 本文件里的三个模型字段（model / imageModel / ocrModel）**都不生效**——
     //    真实模型一律由 Cloudflare 环境变量决定（见 README 环境变量表）：
     //      · model      —— 后端只要 injectKnowledge=true（正常对话都是），就会用
-    //                      KB_MODEL / GENERAL_MODEL 覆盖它；
+    //                      KB_MODEL / GENERAL_MODEL 覆盖它；只有「自动续写」请求
+    //                      （injectKnowledge:false 且 X-AI-Model 头缺失）才会回落到它；
     //      · imageModel —— 前端会把它当 model 字段发出去（js/ai-chat.js 请求体构造处），
     //                      但后端 handleImage 只读 env.IMAGE_MODEL，传进来的 model 整个被忽略；
     //      · ocrModel   —— 前端从不发送该字段，后端也只读 env.OCR_MODEL。
     //    改这三个字段不会改变实际使用的模型，要换模型请改环境变量。
     model: 'Qwen/Qwen3.5-4B',
-    // 识图模型（免费，原生多模态，看图理解+问答，替代付费的 VL 模型）—— 不生效，见上方说明
-    imageModel: 'Qwen/Qwen3.5-4B',
+    // 识图模型 —— 不生效，见上方说明。后端默认已改为 Qwen/Qwen3-VL-8B-Instruct：
+    // 原来的 Qwen/Qwen3.5-4B 实测零字节挂起（0/4），而且它根本不是 VLM。
+    imageModel: 'Qwen/Qwen3-VL-8B-Instruct',
     // OCR 模型（免费，图片/文档/截图 → 文字/markdown 提取）—— 不生效，见上方说明
     ocrModel: 'deepseek-ai/DeepSeek-OCR',
     // 流式输出：逐字显示（打字机效果），显著改善响应感知速度
@@ -27,7 +29,24 @@ const AI_CHAT_CONFIG = {
     // 实测首字延迟只有 0.3~1.2s，1800 会把每一问都硬撑到 1.8s 才显示（纯感知损失），故降到 900。
     // 设为 0 可关闭此效果。
     minBufferTime: 900,
-    
+
+    // 两段式超时（ms）：与后端 functions/api/chat.js 的探针/备用超时配套，
+    // 改后端阈值时**必须同步改这里**，否则前端会在后端故障转移完成前就 abort。
+    //   firstByteMs —— 只等响应头。后端最坏 = 主模型探针 3.5s + 备用模型首字节 15s ≈ 18.5s
+    //                  （识图单模型 10s）；这里给 35s 留足网络与冷启动余量。
+    //   idleMs      —— 生成阶段空闲上限。只要数据持续到达就不断重置，长时间无数据才判断连。
+    //                  用空闲（而非总时长）是因为上下文越大生成越久，固定总超时会把正常的
+    //                  长回答输出到一半掐断。
+    //   imageIdleMs —— 识图请求同上，图片生成更慢，给更宽的值。
+    // 注意：以上阈值按**流式**路径设定（stream 默认 true，也是唯一实测过的路径）。
+    // 若把 stream 改成 false，后端 NON_STREAM_TIMEOUT_MS 是 60s，会因前端先超时而失效——
+    // 且实测上游非流式比流式慢得多。不要改用非流式。
+    timeouts: {
+        firstByteMs: 35000,
+        idleMs: 45000,
+        imageIdleMs: 90000
+    },
+
     // 聊天配置
     maxMessages: 24, // 上下文保留最近 24 条（约 12 轮），多轮追问不丢前文
     // 超窗自动降级保护：条数多不等于体积可控（用户可能粘贴长报告），

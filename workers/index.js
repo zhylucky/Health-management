@@ -42,6 +42,136 @@ import { buildKnowledgeInjection, KB_CONFIG_DEFAULTS, GENERAL_SYSTEM_PROMPT, sho
 
 // ═══ 请求上限防护（与 functions/api/chat.js 保持一致，改动需两处同步）═══
 const MAX_MESSAGES = 60;
+
+// ═══ 上游超时、模型故障转移与熔断（与 functions/api/chat.js 同逻辑，改动需两处同步）════
+// 背景（2026-09-15 实测，每格 n=4）：Qwen/Qwen3.5-4B 在 SiliconFlow 上**间歇性**零字节挂起
+// ——请求发出后既不返回内容也不返回 4xx/5xx，连接永远悬着。实测 4B 只有 1/8 成功（失败全部
+// 是 45s 零字节），同一时间 Qwen/Qwen3-8B 8/8 全通；挂起与 prompt 体积无关（短 prompt 同样挂）。
+// 但 4B 一旦活着就快得多：首内容 418ms、208 字 1.6s（≈130 字/秒）；8B 同长度答案要
+// 3.9~26.4s。所以 4B 仍值得当快通道主模型，靠三条兜住它的不可靠：
+//  1) 逐候选首字节超时（拿到响应头即解除，不影响后续 body）；
+//  2) 故障转移（换**另一个**模型重试，重试安全；备用必须与主模型不同值，否则形同虚设）；
+//  3) 熔断（连续失败 2 次即跳过一段时间，别让每个请求都白等一次探针超时）。
+const UPSTREAM_URL = 'https://api.siliconflow.cn/v1/chat/completions';
+// 主模型探针超时：实测健康首字节 418~1040ms，3.5s 留足余量；挂起时只损失这么久。
+const PRIMARY_FIRST_BYTE_MS = 3500;
+// 备用模型：宁可多等，也不要两个候选都白等。
+const FALLBACK_FIRST_BYTE_MS = 15000;
+// 识图：要算上图片上传时间，给比文本探针更宽的值。
+const IMAGE_FIRST_BYTE_MS = 10000;
+// 非流式：上游要等**完整生成结束**才发响应头，故"首字节"实际等于"生成完成"，放宽到 60s。
+// **生产请用流式**：config.stream 默认 true。
+const NON_STREAM_TIMEOUT_MS = 60000;
+// 熔断参数
+const MODEL_FAIL_THRESHOLD = 2;
+const MODEL_COOLDOWN_MS = 60000;
+const FALLBACK_MODEL_DEFAULT = 'Qwen/Qwen3-8B';
+// 识图默认模型：原来的 Qwen/Qwen3.5-4B 实测 0/4 零字节挂起，而且它**不是 VLM**。
+// 实测 Qwen/Qwen3-VL-8B-Instruct：200、首内容 728ms、正确答出图片颜色。
+const IMAGE_MODEL_DEFAULT = 'Qwen/Qwen3-VL-8B-Instruct';
+
+// ═══ 模型专属参数：必须逐候选模型算，不能按主模型算一次就复用 ═══
+// 实测：Qwen/Qwen3-VL-* 收到 enable_thinking 直接 400；文本模型则需要关掉思考，否则思考
+// 耗尽 max_tokens 导致 content 为空。故只给 Qwen 文本模型加这两个字段。
+const NON_TEXT_QWEN_RE = /-VL-|omni|OCR/i;
+function applyModelFlags(requestBody, model) {
+  const body = { ...requestBody, model };
+  delete body.enable_search;
+  delete body.enable_thinking;
+  if (/^Qwen\//i.test(model) && !NON_TEXT_QWEN_RE.test(model)) {
+    body.enable_search = false;
+    body.enable_thinking = false;
+  }
+  return body;
+}
+
+// ═══ 模型熔断：key = 模型名。连续失败达到阈值即熔断，成功一次立即清零。═══
+const modelHealth = new Map();
+function isModelCoolingDown(model) {
+  const h = modelHealth.get(model);
+  return !!h && h.downUntil > Date.now();
+}
+function noteModelFailure(model) {
+  const h = modelHealth.get(model) || { fails: 0, downUntil: 0 };
+  h.fails += 1;
+  if (h.fails >= MODEL_FAIL_THRESHOLD) {
+    h.downUntil = Date.now() + MODEL_COOLDOWN_MS;
+    h.fails = 0;
+    console.log(`[Upstream] ${model} 连续失败达 ${MODEL_FAIL_THRESHOLD} 次，熔断 ${MODEL_COOLDOWN_MS}ms`);
+  }
+  modelHealth.set(model, h);
+}
+function noteModelSuccess(model) {
+  modelHealth.delete(model);
+}
+export function __resetUpstreamHealth() {
+  modelHealth.clear();
+}
+
+/**
+ * 组装候选模型列表。主备相同时只有一个候选，此时**不给它探针超时**——没有更快的替代品，
+ * 等久一点才是对的。
+ */
+function buildCandidates(primaryModel, fallbackModel, primaryMs = PRIMARY_FIRST_BYTE_MS, fallbackMs = FALLBACK_FIRST_BYTE_MS) {
+  if (!fallbackModel || fallbackModel === primaryModel) {
+    return [{ model: primaryModel, timeoutMs: fallbackMs }];
+  }
+  return [
+    { model: primaryModel, timeoutMs: primaryMs },
+    { model: fallbackModel, timeoutMs: fallbackMs }
+  ];
+}
+
+async function callUpstream(apiKey, requestBody, candidates) {
+  const list = [];
+  for (const c of candidates || []) {
+    if (c && c.model && !list.some(x => x.model === c.model)) list.push(c);
+  }
+  if (list.length === 0) return { resp: null, model: null, error: new Error('没有可用的候选模型') };
+
+  let lastError = null;
+  for (let i = 0; i < list.length; i++) {
+    const { model, timeoutMs } = list[i];
+    // 熔断中的模型直接跳过；但**最后一个候选必须试**
+    if (i < list.length - 1 && isModelCoolingDown(model)) {
+      console.log(`[Upstream] ${model} 熔断中，跳过 → ${list[i + 1].model}`);
+      continue;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(UPSTREAM_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(applyModelFlags(requestBody, model)),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (resp.ok) {
+        noteModelSuccess(model);
+        return { resp, model };
+      }
+      // 4xx：请求/凭证问题，换模型一样失败，如实透传，不计健康度
+      if (resp.status < 500) return { resp, model };
+      lastError = new Error(`上游模型 ${model} 返回 ${resp.status}`);
+      noteModelFailure(model);
+      await resp.text().catch(() => '');
+    } catch (err) {
+      clearTimeout(timer);
+      noteModelFailure(model);
+      lastError = (err?.name === 'TimeoutError' || err?.name === 'AbortError')
+        ? new Error(`上游模型 ${model} ${timeoutMs}ms 内未返回任何响应`)
+        : err;
+    }
+    if (i < list.length - 1) {
+      console.log(`[Upstream] ${model} 失败：${lastError?.message} → 切换 ${list[i + 1].model}`);
+    }
+  }
+  return { resp: null, model: null, error: lastError };
+}
 const MAX_IMAGE_CHARS = 8 * 1024 * 1024;
 // 解析前体积上限：request.json() 会完整解析整个 body 才轮到图片 413 检查，故先看
 // content-length 把超大请求挡在解析之外（chunked 下该头缺失，退化为解析后校验）。
@@ -57,7 +187,7 @@ async function handleImage(request, env, body) {
 
   const apiKey = env.SILICONFLOW_API_KEY;
   // 免费多模态模型做"看图问答"；DeepSeek-OCR 做"文字提取"
-  const imageModel = env.IMAGE_MODEL || 'Qwen/Qwen3.5-4B';
+  const imageModel = env.IMAGE_MODEL || IMAGE_MODEL_DEFAULT;
   const ocrModel = env.OCR_MODEL || 'deepseek-ai/DeepSeek-OCR';
 
   // 文本侧上限（与 functions/api/chat.js 同逻辑）：图片本身有 MAX_IMAGE_CHARS，
@@ -111,24 +241,28 @@ async function handleImage(request, env, body) {
     top_p: 0.8
   };
 
-  // Qwen3.5 默认开启思考模式，思考耗尽 max_tokens 会让 content 为空
-  // 识图必须关闭思考以保证直接输出结果
-  if (imageRequestBody.model.includes('Qwen')) {
-    imageRequestBody.enable_search = false;
-    imageRequestBody.enable_thinking = false;
-  }
+  // 模型专属入参由 callUpstream → applyModelFlags 按实际模型逐个计算：
+  // 文本 Qwen 关思考；VL 模型不能带 enable_thinking（实测 400）。
 
-  const resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(imageRequestBody)
-  });
+  // 识图候选：主模型 + **默认兜底一个已知可用的 VLM**。原因：环境变量 IMAGE_MODEL 一旦被显式
+  // 设成坏模型（例如老的 Qwen/Qwen3.5-4B），代码里的默认值就被覆盖、修了也不生效；加了兜底后
+  // 无需改任何环境变量也能自愈（主模型挂起 10s → 自动换 VL 模型；连续失败后熔断直接跳过它）。
+  // OCR 不加兜底：通用 VLM 描述图片 ≠ 提取文字，格式语义都不对。
+  const imageCandidates = mode === 'ocr'
+    ? [{ model: imageRequestBody.model, timeoutMs: NON_STREAM_TIMEOUT_MS }]
+    : buildCandidates(
+        imageRequestBody.model,
+        env.IMAGE_FALLBACK_MODEL || IMAGE_MODEL_DEFAULT,
+        IMAGE_FIRST_BYTE_MS,
+        IMAGE_FIRST_BYTE_MS
+      );
+
+  const { resp, error } = await callUpstream(apiKey, imageRequestBody, imageCandidates);
+  // 上游挂起/5xx：以前这里会一直悬着，前端只能干等到首字节上限
+  if (!resp) throw new Error(`识图失败：${error?.message || '上游无响应'}`);
 
   if (!resp.ok) {
-    const errText = await resp.text();
+    const errText = await resp.text().catch(() => '');
     throw new Error(`识图请求失败：${resp.status} - ${errText.slice(0, 200)}`);
   }
 
@@ -229,11 +363,13 @@ async function handleChat(request, env) {
     if (injectKnowledge === true && messages.length > 0) {
       const { injection, hits } = buildKnowledgeInjection(messages, KNOWLEDGE_BASE, KB_CONFIG_DEFAULTS);
       const systemMsgIndex = messages.findIndex(m => m.role === 'system');
-      // 寒暄/闲聊（你好/谢谢等）不换 8B，保持 4B 快速响应
+      // 寒暄/闲聊（你好/谢谢等）也走快通道 4B
       const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
       const isChitchat = lastUserMsg ? shouldSkipRetrieval(String(lastUserMsg.content || '')) : false;
 
       if (hits.length > 0 && injection) {
+        // 快通道主模型 = 4B：它健康时 208 字只要 1.6s（8B 同样内容要 3.9~26.4s），所以命中
+        // 知识库仍优先用它；它间歇性零字节挂起（1/8），靠探针超时 + 换 8B + 熔断兜住。
         kbModelOverride = env.KB_MODEL || 'Qwen/Qwen3.5-4B';
         if (systemMsgIndex !== -1) {
           messages[systemMsgIndex].content += injection;
@@ -245,7 +381,7 @@ async function handleChat(request, env) {
         }
         console.log('[KB-RAG] hits:', hits.map(h => `${h.title}(${h.score.toFixed(2)})`).join(' | '));
       } else {
-        // 未命中知识库 → 通用模式；寒暄仍用 4B 保证响应速度
+        // 未命中知识库 → 通用模式。寒暄走快通道 4B；真正的通用问答才用 GENERAL_MODEL(8B)。
         kbModelOverride = isChitchat
           ? (env.KB_MODEL || 'Qwen/Qwen3.5-4B')
           : (env.GENERAL_MODEL || 'Qwen/Qwen3-8B');
@@ -260,7 +396,8 @@ async function handleChat(request, env) {
 
     // 最终使用的模型（便于 Cloudflare 日志确认双通道是否生效）
     const finalModel = kbModelOverride || model || env.DEFAULT_MODEL || 'Qwen/Qwen3-8B';
-    console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'})`);
+    const fallbackModel = env.FALLBACK_MODEL || FALLBACK_MODEL_DEFAULT;
+    console.log(`[KB-RAG] final model=${finalModel} (override=${kbModelOverride || 'none'}, frontend=${model || 'none'}, fallback=${fallbackModel})`);
 
     // ═══ 超窗降级兜底：估算超出预算时从最旧历史丢弃（保留 system 与最新提问），避免上游 400 ═══
     const PROMPT_TOKEN_BUDGET = 26000; // 32K 窗口 − 输出 max_tokens 上限 − 安全余量
@@ -282,94 +419,82 @@ async function handleChat(request, env) {
       frequency_penalty: 0.3
     };
 
-    // Qwen 模型：关闭搜索；思考模式当前固定关闭（前端从不传 enable_thinking，
-    // 见 functions/api/chat.js 同处注释；要重新启用需前端支持渲染 reasoning_content）
-    if (requestBody.model.includes('Qwen')) {
-      requestBody.enable_search = false;
-      requestBody.enable_thinking = typeof body.enable_thinking === 'boolean' ? body.enable_thinking : false;
-    }
+    // 模型专属入参（enable_search / enable_thinking）在 callUpstream 内**按候选模型**逐个
+    // 计算——VL 模型收到 enable_thinking 会直接 400（实测）。
 
-    // ── 流式模式：直接透传 SSE 流（不重试，避免打断已开始的流） ──
+    // ── 流式模式：透传 SSE ──
+    // 故障转移只发生在「拿到响应头之前」，此时还没向客户端吐任何字节，重试安全；
+    // 一旦开始吐流就不再重试（避免打断已开始的流）。
     if (isStream) {
-      const resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(`SiliconFlow API 请求失败：${resp.status} - ${errText.slice(0, 200)}`);
+      const { resp, model: usedModel, error } = await callUpstream(
+        apiKey, requestBody, buildCandidates(finalModel, fallbackModel)
+      );
+      if (!resp) {
+        return new Response(JSON.stringify({ error: 'AI 服务暂时不可用，请稍后重试', details: error?.message }), {
+          status: 504,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
       }
-
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        return new Response(JSON.stringify({ error: `SiliconFlow API 请求失败：${resp.status} - ${errText.slice(0, 200)}` }), {
+          status: resp.status,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
       return new Response(resp.body, {
         status: 200,
         headers: {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache',
           'X-Accel-Buffering': 'no',
-          // 回传实际使用的模型：供前端「自动续写」请求显式回传同一模型，
-          // 避免 RAG 未命中切到 GENERAL_MODEL(8B) 后续写回落前端默认模型导致首尾不一致
-          'X-AI-Model': finalModel,
+          // 回传**实际成功**的模型（故障转移后可能与 finalModel 不同），供前端
+          // 「自动续写」请求回传同一模型，避免同一条回答首尾模型不一致
+          'X-AI-Model': usedModel,
           ...corsHeaders
         }
       });
     }
 
-    // ── 非流式模式：只重试网络异常与 5xx（与 functions/api/chat.js 同逻辑）──
-    // 4xx（401 密钥/400 参数/429 限流）重试必然同样失败，且 429 无退避重试会加剧限流
-    const maxRetries = 2;
-    let lastError;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      let resp, responseText;
+    // ── 非流式模式（与 functions/api/chat.js 同逻辑）──
+    // 首字节超时 + 换模型重试由 callUpstream 统一处理；4xx（401 密钥/400 参数/429 限流）
+    // 不重试，换模型一样失败，且 429 无退避重试会加剧限流。
+    // 读 body 不再设超时：首字节计时在拿到响应头时已解除，长回答可完整生成不被截断。
+    const { resp, model: usedModel, error } = await callUpstream(
+      apiKey, requestBody, buildCandidates(finalModel, fallbackModel, NON_STREAM_TIMEOUT_MS, NON_STREAM_TIMEOUT_MS)
+    );
+    if (!resp) {
+      return new Response(JSON.stringify({ error: 'AI 服务暂时不可用，请稍后重试', details: error?.message }), {
+        status: 504,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    let responseText;
+    try {
+      responseText = await resp.text();
+    } catch (netError) {
+      return new Response(JSON.stringify({ error: '读取 AI 服务响应中断，请稍后重试', details: netError.message }), {
+        status: 504,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+    if (resp.ok) {
       try {
-        resp = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify(requestBody)
+        return new Response(JSON.stringify(JSON.parse(responseText)), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'X-AI-Model': usedModel, ...corsHeaders }
         });
-        // 读 body 也算网络层：连接在读完响应头后中断会在这里抛错，同样值得重试
-        responseText = await resp.text();
-      } catch (netError) {
-        lastError = netError;
-        if (attempt < maxRetries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-        continue;
-      }
-
-      if (resp.ok) {
-        try {
-          return new Response(JSON.stringify(JSON.parse(responseText)), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json', 'X-AI-Model': finalModel, ...corsHeaders }
-          });
-        } catch (parseError) {
-          return new Response(JSON.stringify({ error: 'AI 服务返回了非预期格式', details: parseError.message }), {
-            status: 502,
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-          });
-        }
-      }
-      if (resp.status < 500) {
-        return new Response(JSON.stringify({
-          error: `SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`
-        }), {
-          status: resp.status,
+      } catch (parseError) {
+        return new Response(JSON.stringify({ error: 'AI 服务返回了非预期格式', details: parseError.message }), {
+          status: 502,
           headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
       }
-      lastError = new Error(`SiliconFlow API 暂时不可用：${resp.status}`);
-      if (attempt < maxRetries) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
     }
-
-    return new Response(JSON.stringify({ error: 'AI 服务响应超时，请稍后重试', details: lastError?.message }), {
-      status: 504,
+    return new Response(JSON.stringify({
+      error: `SiliconFlow API 请求失败：${resp.status} - ${responseText.slice(0, 200)}`
+    }), {
+      status: resp.status,
       headers: { 'Content-Type': 'application/json', ...corsHeaders }
     });
 

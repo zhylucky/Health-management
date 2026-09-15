@@ -162,12 +162,33 @@ AI 链路本地自测需要 `.dev.vars`：复制 `.dev.vars.example` 为 `.dev.v
 | 变量 | 位置 | 说明 |
 |------|------|------|
 | `SILICONFLOW_API_KEY` | Pages 项目 secret / `.dev.vars` | SiliconFlow 密钥，AI 助手必需 |
-| `IMAGE_MODEL` | 可选 | 识图模型，默认 `Qwen/Qwen3.5-4B` |
+| `IMAGE_MODEL` | 可选 | 识图模型，默认 `Qwen/Qwen3-VL-8B-Instruct`（必须是 VLM） |
+| `IMAGE_FALLBACK_MODEL` | 可选 | 识图故障转移模型，默认 `Qwen/Qwen3-VL-8B-Instruct`（即识图默认模型本身）。必须是 VLM——文本模型对图片会被上游 400 |
 | `OCR_MODEL` | 可选 | OCR 模型，默认 `deepseek-ai/DeepSeek-OCR` |
-| `KB_MODEL` | 可选 | 命中知识库时的模型，默认 `Qwen/Qwen3.5-4B` |
+| `KB_MODEL` | 可选 | 对话快通道主模型，默认 `Qwen/Qwen3.5-4B`（命中知识库/寒暄走它） |
 | `GENERAL_MODEL` | 可选 | 未命中知识库时的模型，默认 `Qwen/Qwen3-8B` |
 | `DEFAULT_MODEL` | 可选 | 兜底模型，默认 `Qwen/Qwen3-8B` |
+| `FALLBACK_MODEL` | 可选 | 故障转移模型，默认 `Qwen/Qwen3-8B`。主模型探针超时/5xx 时改用它重试 |
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | 前端 `js/login.js` / `js/JKscript.js` 硬编码 | anon key 设计上即为公开密钥 |
+
+> **模型选择实测记录（2026-09-15，每格 n=4，直连 SiliconFlow）**
+>
+> | 场景 | 结果 |
+> |---|---|
+> | `Qwen/Qwen3.5-4B` 文本 | **1/8 成功**，失败全部是 45s 零字节挂起（与 prompt 长短无关） |
+> | `Qwen/Qwen3-8B` 文本 | **8/8 成功**，首内容 0.6~1.0s，200 字总时长 3.9~26.4s |
+> | `Qwen/Qwen3.5-4B` 识图 | 0/4，零字节挂起（且它不是 VLM） |
+> | `Qwen/Qwen3-VL-8B-Instruct` 识图 | 200，首内容 728ms，答案正确 |
+>
+> 4B 虽然只有约 1/8 可用，但**活着时快 10 倍**（208 字 1.6s ≈ 130 字/秒，8B 约 8~50 字/秒），
+> 所以它仍作为快通道主模型保留，靠「3.5s 探针超时 → 换 8B → 连续失败熔断」兜住。
+> 这直接决定了 `KB_MODEL` 不要改成 8B：那会把每条知识库回答都拖慢数倍。
+> 识图则相反——必须换成真正的 VLM，4B 既挂起又不是视觉模型。
+>
+> 识图还**默认兜底** `Qwen/Qwen3-VL-8B-Instruct`：因为环境变量 `IMAGE_MODEL` 一旦被显式设成
+> 坏模型就会覆盖代码默认值，"只改默认值"救不回来。有了兜底，无需改任何环境变量即可自愈
+> （主模型挂起 10s → 自动换兜底；连续失败后熔断直接跳过）。
+> OCR 不加兜底——通用 VLM「描述图片」≠「提取文字」，语义和格式都不对。
 
 生产配置：
 

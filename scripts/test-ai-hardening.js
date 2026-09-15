@@ -124,7 +124,7 @@ function testTrim() {
 // ═══ 3. /api/chat 处理器：上限防护 / 识图历史 / 重试策略 ═══
 async function testChatHandler() {
   console.log('\n═══ 3. /api/chat 处理器行为 ═══');
-  const { onRequestPost } = await import(
+  const { onRequestPost, __resetUpstreamHealth } = await import(
     'file://' + path.join(ROOT, 'functions', 'api', 'chat.js').replace(/\\/g, '/')
   );
 
@@ -217,6 +217,7 @@ async function testChatHandler() {
   // 重试策略
   const chatBody = { messages: [{ role: 'user', content: 'hi' }], stream: false, model: 'Qwen/Qwen3.5-4B' };
   const retryCase = async (label, responder, expectStatus, expectCalls) => {
+    __resetUpstreamHealth(); // 熔断状态是模块级的，每个用例都要从干净状态开始
     let calls = 0;
     globalThis.fetch = async () => { calls++; return responder(calls); };
     const res = await onRequestPost({ request: mkReq(chatBody), env });
@@ -226,13 +227,154 @@ async function testChatHandler() {
   const errRes = (c) => new Response('upstream error', { status: c });
   await retryCase('4xx 不重试（400）', () => errRes(400), 400, 1);
   await retryCase('4xx 不重试（429）', () => errRes(429), 429, 1);
-  await retryCase('5xx 重试 3 次后 504', () => errRes(503), 504, 3);
-  await retryCase('5xx 后成功 → 200', (n) => (n < 3 ? errRes(503) : okJson()), 200, 3);
+  // ═══ 重试契约变更（2026-09-15）═══
+  // 旧契约：同一模型重试 3 次。线上故障证明它无效——模型整体挂起时，对同一个死模型重试
+  // 3 次只是把超时时间翻 3 倍，仍然必败。
+  // 新契约：主模型失败后**换备用模型**再试（每个模型只试 1 次，否则挂起场景的等待会成倍
+  // 放大）。总尝试次数从 3 降到 2，但对"模型整体不可用"这一真实故障模式有效。
+  await retryCase('5xx 换备用模型后仍失败 → 504', () => errRes(503), 504, 2);
+  await retryCase('5xx 后换备用模型成功 → 200', (n) => (n === 1 ? errRes(503) : okJson()), 200, 2);
   await retryCase('200 但非 JSON → 502', () => new Response('not json', { status: 200 }), 502, 1);
-  // 读 body 失败属于网络层：必须和 fetch 失败一样可重试
-  await retryCase('body 读取失败 → 重试 3 次后 504',
+  // 读 body 失败：不再重试。首字节之后的中断发生在"已经生成内容"的阶段，且此刻换模型
+  // 重发会把已生成的半截内容作废；前端默认走流式（本分支只是兜底路径），直接报错更可预测。
+  await retryCase('body 读取失败 → 504（不重试）',
     () => new Response(new ReadableStream({ start(c) { c.error(new Error('body broken')); } }), { status: 200 }),
-    504, 3);
+    504, 1);
+  // 主备同名（未配 FALLBACK_MODEL / 主模型就是备用模型）时不得"假装故障转移"：
+  // 只有一个候选，上游 5xx 就该 1 次调用直接 504（用 8B 当主模型即可复现同名场景）。
+  {
+    __resetUpstreamHealth();
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return errRes(503); };
+    const res = await onRequestPost({ request: mkReq({ ...chatBody, model: 'Qwen/Qwen3-8B' }), env });
+    check('主模型=备用模型时 → 只调用 1 次并 504', res.status === 504 && calls === 1,
+      `(状态 ${res.status}, 上游 ${calls} 次)`);
+  }
+
+  // ═══ 首字节超时 + 模型故障转移（核心场景）═══
+  // 复现线上故障：主模型请求发出后挂起，既不返回内容也不返回错误码（实测零字节）。
+  // 期望：主模型探针超时 → 自动切备用模型 → 成功返回，而不是干等到前端超时。
+  // 用 stream:true——这才是生产真实路径（config.stream 默认 true）；非流式走
+  // NON_STREAM_TIMEOUT_MS(60s)，此处不测（会让套件慢一分钟）。
+  {
+    __resetUpstreamHealth();
+    const streamBody = { ...chatBody, stream: true };
+    let calls = 0;
+    globalThis.fetch = async (url, opts) => {
+      calls++;
+      if (calls === 1) {
+        // 模拟上游挂起：永不 resolve，仅在 abort 时 reject
+        return new Promise((_, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+      }
+      return okJson();
+    };
+    const t0 = Date.now();
+    const res = await onRequestPost({ request: mkReq(streamBody), env });
+    const dt = Date.now() - t0;
+    check('主模型挂起 → 探针超时(3.5s)后切备用模型并成功',
+      res.status === 200 && calls === 2 && dt >= 3000 && dt < 8000,
+      `(状态 ${res.status}, 上游 ${calls} 次, 耗时 ${dt}ms)`);
+  }
+
+  // ═══ 熔断：主模型持续挂起时，不能让每个请求都白等一次探针超时 ═══
+  // 实测 4B 只有 1/8 成功，若每个请求都先等 3.5s 再切，用户要为每次提问多付 3.5s。
+  {
+    __resetUpstreamHealth();
+    const streamBody = { ...chatBody, stream: true };
+    const hang = (url, opts) => new Promise((_, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const e = new Error('aborted');
+        e.name = 'AbortError';
+        reject(e);
+      });
+    });
+    // 前两次：主模型挂起 → 切备用成功（同时把主模型计入失败）
+    for (let i = 0; i < 2; i++) {
+      let n = 0;
+      globalThis.fetch = async (u, o) => (++n === 1 ? hang(u, o) : okJson());
+      await onRequestPost({ request: mkReq(streamBody), env });
+    }
+    // 第三次：主模型应被熔断跳过 → 只有 1 次上游调用，且不再有探针等待
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return okJson(); };
+    const t0 = Date.now();
+    const res = await onRequestPost({ request: mkReq(streamBody), env });
+    const dt = Date.now() - t0;
+    check('连续失败后熔断：第三个请求跳过主模型（1 次调用、无探针等待）',
+      res.status === 200 && calls === 1 && dt < 1500,
+      `(状态 ${res.status}, 上游 ${calls} 次, 耗时 ${dt}ms)`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 逐候选模型入参：VL 模型不能带 enable_thinking（实测 400）═══
+  {
+    const vlCaptured = [];
+    globalThis.fetch = async (url, opts) => { vlCaptured.push(JSON.parse(opts.body)); return okJson(); };
+    await onRequestPost({ request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', messages: [{ role: 'user', content: 'x' }] }), env });
+    const vlBody = vlCaptured[0];
+    check('识图默认模型是 VLM 且不携带 enable_thinking',
+      vlBody.model === 'Qwen/Qwen3-VL-8B-Instruct' && vlBody.enable_thinking === undefined && vlBody.enable_search === undefined,
+      `(model=${vlBody.model}, enable_thinking=${vlBody.enable_thinking})`);
+
+    const textCaptured = [];
+    globalThis.fetch = async (url, opts) => { textCaptured.push(JSON.parse(opts.body)); return okJson(); };
+    __resetUpstreamHealth();
+    await onRequestPost({ request: mkReq({ ...chatBody, messages: [{ role: 'user', content: 'hi' }] }), env });
+    const textBody = textCaptured[0];
+    check('文本 Qwen 模型仍然关闭搜索与思考',
+      textBody.enable_thinking === false && textBody.enable_search === false,
+      `(enable_thinking=${textBody.enable_thinking}, enable_search=${textBody.enable_search})`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 识图必须能自愈：生产的 IMAGE_MODEL 可能被 env 显式设成坏模型，覆盖代码默认值 ═══
+  // 这时只能靠 IMAGE_MODEL_DEFAULT 充当兜底 VLM，否则"改了默认值也不生效"。
+  {
+    __resetUpstreamHealth();
+    const seen = [];
+    globalThis.fetch = async (url, opts) => {
+      const b = JSON.parse(opts.body);
+      seen.push(b.model);
+      return seen.length === 1 ? errRes(503) : okJson();
+    };
+    const res = await onRequestPost({
+      request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, messages: [{ role: 'user', content: 'x' }] }),
+      env: { ...env, IMAGE_MODEL: 'Qwen/Qwen3.5-4B' }
+    });
+    check('识图主模型 5xx → 自动换到 VLM 兜底',
+      res.status === 200 && seen.length === 2 &&
+      seen[0] === 'Qwen/Qwen3.5-4B' && seen[1] === 'Qwen/Qwen3-VL-8B-Instruct',
+      `(状态 ${res.status}, 依次 ${seen.join(' → ')})`);
+    __resetUpstreamHealth();
+  }
+
+  // ═══ 识图路径必须也有超时：以前是裸 fetch，上游挂起会一直悬着 ═══
+  {
+    __resetUpstreamHealth();
+    globalThis.fetch = (url, opts) => new Promise((_, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const e = new Error('aborted');
+        e.name = 'AbortError';
+        reject(e);
+      });
+    });
+    const t0 = Date.now();
+    const res = await onRequestPost({
+      request: mkReq({ image: 'data:image/png;base64,AAAA', imageMode: 'understand', stream: true, messages: [{ role: 'user', content: 'x' }] }),
+      env
+    });
+    const dt = Date.now() - t0;
+    check('识图上游挂起 → 10s 内返回错误（不再无限悬挂）',
+      res.status === 500 && dt >= 9000 && dt < 14000,
+      `(状态 ${res.status}, 耗时 ${dt}ms)`);
+    __resetUpstreamHealth();
+  }
 }
 
 // ═══ 4. 两个后端实现的常量一致性（重复代码，靠断言防漂移）═══
@@ -244,16 +386,18 @@ function testBackendParity() {
     const m = src.match(new RegExp('const\\s+' + name + '\\s*=\\s*([^;]+);'));
     return m ? m[1].replace(/\s+/g, '') : null;
   };
-  const names = ['MAX_MESSAGES', 'MAX_IMAGE_CHARS', 'MAX_BODY_BYTES', 'IMAGE_HISTORY_LIMIT', 'IMAGE_HISTORY_MAX_CHARS', 'IMAGE_PROMPT_MAX_CHARS'];
+  // 上游超时/故障转移/熔断常量必须两后端同步（一处改了另一处没改，两边行为会静默分叉）
+  const names = ['MAX_MESSAGES', 'MAX_IMAGE_CHARS', 'MAX_BODY_BYTES', 'IMAGE_HISTORY_LIMIT',
+    'IMAGE_HISTORY_MAX_CHARS', 'IMAGE_PROMPT_MAX_CHARS',
+    'PRIMARY_FIRST_BYTE_MS', 'FALLBACK_FIRST_BYTE_MS', 'IMAGE_FIRST_BYTE_MS',
+    'NON_STREAM_TIMEOUT_MS', 'MODEL_FAIL_THRESHOLD', 'MODEL_COOLDOWN_MS',
+    'FALLBACK_MODEL_DEFAULT', 'IMAGE_MODEL_DEFAULT'];
   const bad = [];
   for (const n of names) {
     const a = grab(pages, n), b = grab(worker, n);
     if (!a || !b || a !== b) bad.push(`${n}(pages=${a}, worker=${b})`);
   }
-  if (grab(pages, 'maxRetries') !== grab(worker, 'maxRetries')) {
-    bad.push(`maxRetries(pages=${grab(pages, 'maxRetries')}, worker=${grab(worker, 'maxRetries')})`);
-  }
-  check('两后端关键常量一致', bad.length === 0, bad.length ? bad.join(' | ') : `(${names.length + 1} 项)`);
+  check('两后端关键常量一致', bad.length === 0, bad.length ? bad.join(' | ') : `(${names.length} 项)`);
 }
 
 (async () => {

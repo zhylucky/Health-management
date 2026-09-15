@@ -707,11 +707,12 @@ class AIChatWidget {
                 }
                 bufferPending = false;
             }
-            // ═══ 输出截断自动续写：撞 max_tokens（length）或流中途断开（interrupted）时，
-            // 自动发起一次续写请求，把剩余内容无缝接进同一气泡，避免"输出到一半自己停"。
-            // 识图请求不自动续写（重发图片代价高），仅提示 ═══
+            // ═══ 输出截断自动续写：仅撞 max_tokens（length）时自动续写一次，把剩余内容
+            // 无缝接进同一气泡，避免"输出到一半自己停"。
+            // 'interrupted'（流中途断开）**不自动续写**，见下方分支说明 ═══
             let finalText = result.text;
-            if (result.finishReason === 'length' || result.finishReason === 'interrupted') {
+            if (result.finishReason === 'length') {
+                // 识图请求不自动续写（重发图片代价高），仅提示
                 if (!hasImage) {
                     const seed = aiMsg.content; // 已流进气泡的原始半截内容（不含提示后缀）
                     try {
@@ -723,19 +724,21 @@ class AIChatWidget {
                             model: result.usedModel
                         });
                         finalText = seed + (cont.text || '');
-                        // interrupted 时 cont.text 已自带中断提示，不重复追加
                         if (cont.finishReason === 'length') {
                             finalText += '\n\n⚠️ 回答较长仍未输出完整，可发送「继续」补全后续内容';
                         }
                     } catch (e) {
                         console.warn('自动续写失败:', e.message);
-                        finalText = result.finishReason === 'interrupted'
-                            ? result.text // 已含"连接中断，可发送继续"提示
-                            : result.text + '\n\n⚠️ 回答已达长度上限被截断，可发送「继续」查看后续';
+                        finalText = result.text + '\n\n⚠️ 回答已达长度上限被截断，可发送「继续」查看后续';
                     }
-                } else if (result.finishReason === 'length') {
+                } else {
                     finalText += '\n\n⚠️ 识别内容已达长度上限被截断，可重新发送图片追问细节';
                 }
+            } else if (result.finishReason === 'interrupted') {
+                // 流中途断开（生成阶段空闲超时 / 网络断）：保留已输出的半截内容 + 提示手动补全。
+                // **不自动续写**——断连多半是上游或网络问题，续写请求极可能再撞一次超时，
+                // 实测会让用户干等两轮才看到结果，远不如直接给可操作的提示。
+                finalText = result.text + '\n\n⚠️ 回答生成中断，可发送「继续」补全后续内容';
             }
             aiMsg.content = finalText;
             this.updateMessageContent(aiMsg, finalText, false);
@@ -819,16 +822,30 @@ class AIChatWidget {
         ];
 
         // 识图/OCR 也走流式：复杂图全量生成可达数十秒，逐字输出让用户先看到内容
-        // ═══ 空闲超时（不再是总时长超时）：只要数据持续到达就不掐断，长时间无数据才判定断连。
-        // 上下文越大生成越久，固定总超时会把正常长回答输出到一半 abort 掉 ═══
-        const idleMs = hasImage ? 90000 : 45000;
+        // ═══ 两段式超时：首字节等待 ≠ 生成阶段空闲 ═══
+        // 原实现只有一个空闲计时器，而它唯一的重置入口（onActivity）要等 SSE 首字节之后才
+        // 可能触发——于是「发请求 → 拿到首字节」这段成了不可重置的硬上限：上游一慢就必然
+        // abort，且报错分不清是"排队"还是"断连"（实测上游模型挂起时 6/6 全部命中）。
+        // 现在拆成两段独立计时，报错能定位到阶段：
+        //   1) firstByte —— 只等响应头。后端单模型首字节超时 15s、失败后自动换备用模型再试
+        //      一次，最坏约 30s；这里给 35s 留网络余量。**调后端阈值必须同步上调这里。**
+        //   2) idle      —— 生成阶段空闲上限，只要数据持续到达就不断重置，长时间无数据才判断连。
+        const timeouts = this.config.timeouts || {};
+        const firstByteMs = timeouts.firstByteMs ?? 35000;
+        const idleMs = hasImage ? (timeouts.imageIdleMs ?? 90000) : (timeouts.idleMs ?? 45000);
         const controller = new AbortController();
         let idleTimer = null;
-        const resetIdleTimer = () => {
+        let phase = 'firstByte';
+        const armTimer = (ms) => {
             if (idleTimer) clearTimeout(idleTimer);
-            idleTimer = setTimeout(() => controller.abort(), idleMs);
+            idleTimer = setTimeout(() => controller.abort(), ms);
         };
-        resetIdleTimer();
+        armTimer(firstByteMs);
+        const resetIdleTimer = () => {
+            // 首个数据到达即切到生成阶段：首字节的硬上限到此结束
+            if (phase === 'firstByte') phase = 'streaming';
+            armTimer(idleMs);
+        };
         const strategyCfg = strategy || {};
         const isStream = this.config.stream !== false;
         // 用户文字含"提取/识别文字"等意图时走 OCR 模型（DeepSeek-OCR），否则多模态理解
@@ -889,7 +906,12 @@ class AIChatWidget {
             };
         } catch (err) {
             if (idleTimer) clearTimeout(idleTimer);
-            if (err?.name === 'AbortError') throw new Error('请求超时');
+            if (err?.name === 'AbortError') {
+                // 带上阶段标识：排查时能直接区分「上游排队/挂起」与「生成中途断流」
+                throw new Error(phase === 'firstByte'
+                    ? '请求超时：AI 服务未在预期时间内响应'
+                    : '请求超时：回答生成中断');
+            }
             throw err;
         } finally {
             this._isStreaming = false;
